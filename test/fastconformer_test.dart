@@ -21,22 +21,24 @@ void main() {
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
 
-  group('FastConformer super-encoder transcribe (jfk_asknot)', () {
+  // One HYBRID artifact dir feeds both heads (shared super_encoder.onnx + ctc_decoder.onnx
+  // + decoder_joint.onnx).
+  final hybridDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid_int8');
 
-    // CTC
+  group('FastConformer super-encoder transcribe (jfk_asknot)', () {
     _headTest(
-      label: 'CTC super-encoder',
-      modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/ctc_int8'),
-      requiredFiles: const ['super_encoder.onnx'],
+      label: 'CTC',
+      modelDirectory: hybridDir,
+      requiredFiles: const ['super_encoder.onnx', 'ctc_decoder.onnx'],
       create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
     );
 
     _headTest(
-      label: 'RNN-T super-encoder',
-      modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/rnnt_int8'),
-      requiredFiles: const ['encoder.onnx', 'decoder_joint.onnx'],
+      label: 'RNN-T',
+      modelDirectory: hybridDir,
+      requiredFiles: const ['super_encoder.onnx', 'decoder_joint.onnx'],
       create: () => FastConformerRnntTranscriber(),
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
@@ -49,15 +51,15 @@ void main() {
   group('FastConformer word/segment details', () {
     _detailsTest(
       label: 'CTC',
-      modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/ctc_int8'),
-      requiredFiles: const ['super_encoder.onnx'],
+      modelDirectory: hybridDir,
+      requiredFiles: const ['super_encoder.onnx', 'ctc_decoder.onnx'],
       create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
     );
     _detailsTest(
       label: 'RNN-T',
-      modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/rnnt_int8'),
-      requiredFiles: const ['encoder.onnx', 'decoder_joint.onnx'],
+      modelDirectory: hybridDir,
+      requiredFiles: const ['super_encoder.onnx', 'decoder_joint.onnx'],
       create: () => FastConformerRnntTranscriber(),
       testAudioFile: testAudioFile,
     );

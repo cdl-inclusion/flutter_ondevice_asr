@@ -21,13 +21,14 @@ typedef _Token = ({int id, double logProb, int frame});
 /// Abstract base for the on-device FastConformer transcribers. **Not instantiable** —
 /// use [FastConformerCtcTranscriber] or [FastConformerRnntTranscriber].
 ///
-/// Holds everything the two heads share: the `tokens.txt` tokenizer, the raw-waveform
-/// encoder input names, the frame stride (for timestamps), and the head-agnostic
-/// post-processing — detok, word grouping (confidence + timestamps), and segment
-/// confidence. `loadModel` parses the common `meta.json` + `tokens.txt`, then defers the
-/// ONNX-graph loading to [_loadGraphs]; `transcribe` defers the actual decode to
-/// [_decodeTokens]. Both heads feed a raw waveform (mel preprocessor baked into the graph
-/// — no Dart featurizer).
+/// Both heads share one artifact dir with a single, shared super-encoder
+/// (`super_encoder.onnx`: waveform -> encoder_out, mel preprocessor baked in) and a
+/// per-head graph (`ctc_decoder.onnx` / `decoder_joint.onnx`). The base owns the shared
+/// encoder session and the head-agnostic pieces — the tokenizer, running the encoder,
+/// detok, word grouping (confidence + timestamps), and segment confidence. `loadModel`
+/// parses the common `meta.json` + `tokens.txt`, loads the shared encoder, then defers
+/// the head graph to [_loadHead]; `transcribe` runs the encoder once and hands the
+/// outputs to [_decodeFromEncoder]. Raw waveform in — no Dart featurizer.
 abstract class FastConformerTranscriber implements Transcriber {
   static const int sampleRate = 16000;
 
@@ -45,20 +46,23 @@ abstract class FastConformerTranscriber implements Transcriber {
   // turn a frame index into a word timestamp. Default 8 × 10 ms = 80 ms; from meta.json.
   double _secondsPerFrame = 0.08;
 
-  // Encoder input names (both heads take a raw waveform).
+  // The SHARED super-encoder (waveform -> encoder_out), owned by the base.
+  OrtSession? _encoderSession;
   String _inWaveform = 'waveforms';
   String _inLength = 'waveforms_lens';
 
   // ------------------------------------------------------- head-specific hooks
 
-  /// Load the head's ONNX session(s) from [modelDirectory] (with the parsed [meta]).
-  /// Called by [loadModel] after the common meta/tokens parsing.
-  Future<Result<void>> _loadGraphs(String modelDirectory, Map<String, dynamic> meta);
+  /// Load the head's ONNX graph from [modelDirectory] (with the parsed [meta]). Called by
+  /// [loadModel] after the shared encoder + common meta/tokens parsing.
+  Future<Result<void>> _loadHead(String modelDirectory, Map<String, dynamic> meta);
 
-  /// Run the head's encoder + decode over [audio], returning the emitted tokens.
-  /// [withConfidence] requests per-token log-probs (used only when word/segment details
-  /// are requested; for RNN-T this gates an extra softmax, for CTC it's free).
-  Future<List<_Token>> _decodeTokens(Float32List audio, {required bool withConfidence});
+  /// Decode the shared encoder's outputs into emitted tokens. [encOutputs] are the raw
+  /// `super_encoder.onnx` outputs ([0] = encoder_out, [1] = encoded_lengths); the base
+  /// releases them after this returns. [withConfidence] requests per-token log-probs
+  /// (RNN-T gates an extra softmax on it; for CTC the log-prob is free).
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+      {required bool withConfidence});
 
   // ------------------------------------------------------------- shared: load
 
@@ -73,14 +77,16 @@ abstract class FastConformerTranscriber implements Transcriber {
   }) async {
     _modelPath = modelDirectory;
 
-    // meta.json -> blank id, frame stride, encoder IO names.
+    // meta.json -> blank id, frame stride, super-encoder IO names + graph name.
     final Map<String, dynamic> meta;
+    String superEncoderOnnx = 'super_encoder.onnx';
     try {
       final metaStr = await Utils.loadString('$modelDirectory/meta.json');
       meta = jsonDecode(metaStr) as Map<String, dynamic>;
       _blankId = (meta['blank_id'] as num).toInt();
       _secondsPerFrame = _frameStride(meta);
-      final io = meta['superencoder_io'] as Map<String, dynamic>?;
+      superEncoderOnnx = (meta['super_encoder_onnx'] as String?) ?? superEncoderOnnx;
+      final io = meta['super_encoder_io'] as Map<String, dynamic>?;
       if (io != null) {
         _inWaveform = (io['input_waveform'] as String?) ?? _inWaveform;
         _inLength = (io['input_length'] as String?) ?? _inLength;
@@ -99,10 +105,20 @@ abstract class FastConformerTranscriber implements Transcriber {
       return vocabResult;
     }
 
-    // Head-specific ONNX graph(s).
-    final graphsResult = await _loadGraphs(modelDirectory, meta);
-    if (graphsResult is Error) {
-      return graphsResult;
+    // Shared super-encoder session.
+    try {
+      final bytes = await Utils.loadBytes('$modelDirectory/$superEncoderOnnx');
+      _encoderSession = TranscriberOnnxConfig().createSession(bytes);
+    } catch (e) {
+      return Result.error(
+        Exception('Failed to load $superEncoderOnnx from <$modelDirectory>: $e'),
+      );
+    }
+
+    // Head-specific ONNX graph.
+    final headResult = await _loadHead(modelDirectory, meta);
+    if (headResult is Error) {
+      return headResult;
     }
 
     _loaded = true;
@@ -112,6 +128,8 @@ abstract class FastConformerTranscriber implements Transcriber {
     );
     return Result.ok(null);
   }
+
+  // -------------------------------------------------------- shared: transcribe
 
   @override
   Future<Result<TranscriptionResult>> transcribe(
@@ -126,7 +144,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     }
 
     final withConfidence = getWordDetails || getSegmentDetails;
-    final tokens = await _decodeTokens(audio, withConfidence: withConfidence);
+    final tokens = await _runEncoderAndDecode(audio, withConfidence: withConfidence);
 
     final transcript = _tokenizer.decodeIds(
       tokens.map((t) => t.id).toList(growable: false),
@@ -158,6 +176,38 @@ abstract class FastConformerTranscriber implements Transcriber {
     );
   }
 
+  /// Run the shared super-encoder once, then hand its outputs to the head's
+  /// [_decodeFromEncoder]. Encoder outputs are released here after decoding.
+  Future<List<_Token>> _runEncoderAndDecode(Float32List audio,
+      {required bool withConfidence}) async {
+    final runOptions = OrtRunOptions();
+    final audioTensor =
+        OrtValueTensor.createTensorWithDataList(audio, [1, audio.length]);
+    final lengthTensor = OrtValueTensor.createTensorWithDataList(
+      Int64List.fromList([audio.length]),
+      [1],
+    );
+
+    List<OrtValue?>? encOutputs;
+    try {
+      encOutputs = await _encoderSession!.runAsync(runOptions, {
+        _inWaveform: audioTensor,
+        _inLength: lengthTensor,
+      });
+    } finally {
+      audioTensor.release();
+      lengthTensor.release();
+      runOptions.release();
+    }
+
+    if (encOutputs == null || encOutputs.isEmpty) return const [];
+    try {
+      return _decodeFromEncoder(encOutputs, withConfidence: withConfidence);
+    } finally {
+      _releaseAll(encOutputs);
+    }
+  }
+
   @override
   Future<Result<TranscriptionResult>> transcribeFile(
     String path, {
@@ -175,6 +225,13 @@ abstract class FastConformerTranscriber implements Transcriber {
       maxOutputTokens: maxOutputTokens,
     );
   }
+
+  @override
+  void dispose() {
+    _encoderSession?.release();
+  }
+
+  // ---------------------------------------------------------- shared: helpers
 
   /// Encoder frame stride in seconds = subsampling_factor × window_stride (from meta),
   /// used to turn a frame index into a word timestamp. Falls back to 80 ms.
@@ -238,59 +295,55 @@ abstract class FastConformerTranscriber implements Transcriber {
   }
 }
 
-/// FastConformer **CTC** transcriber
-/// 
-/// One `super_encoder.onnx` graph (mel preprocessor baked in): raw waveform -> CTC
-/// log-probs. Greedy collapse + `tokens.txt` detok.
+/// FastConformer **CTC** transcriber — the fast, non-autoregressive head.
+///
+/// Loads the standalone `ctc_decoder.onnx` (encoder_out -> logprobs) on top of the shared
+/// super-encoder. Because the CTC output is already log-softmax, per-token confidence is
+/// free (`exp(logProb)`). The encoder_out OrtValue is fed straight into `ctc_decoder` —
+/// no Dart round-trip for the intermediate.
 class FastConformerCtcTranscriber extends FastConformerTranscriber {
-  OrtSession? _session;
+  OrtSession? _ctcSession;
+  String _ctcIn = 'encoder_out';
 
   @override
-  Future<Result<void>> _loadGraphs(
+  Future<Result<void>> _loadHead(
       String modelDirectory, Map<String, dynamic> meta) async {
-    // The merged CTC output tensor is `ctc/logprobs`; read outputs[0] positionally.
     try {
-      final bytes = await Utils.loadBytes('$modelDirectory/super_encoder.onnx');
-      _session = TranscriberOnnxConfig().createSession(bytes);
+      final ctcIo = meta['ctc_decoder_io'] as Map<String, dynamic>?;
+      _ctcIn = (ctcIo?['input_encoder'] as String?) ?? _ctcIn;
+      final ctcOnnx = (meta['ctc_decoder_onnx'] as String?) ?? 'ctc_decoder.onnx';
+      _ctcSession =
+          TranscriberOnnxConfig().createSession(await Utils.loadBytes('$modelDirectory/$ctcOnnx'));
       return Result.ok(null);
     } catch (e) {
       return Result.error(
-        Exception('Failed to load super_encoder.onnx from <$modelDirectory>: $e'),
+        Exception('Failed to load ctc_decoder.onnx from <$modelDirectory>: $e'),
       );
     }
   }
 
   @override
-  Future<List<_Token>> _decodeTokens(Float32List audio,
-      {required bool withConfidence}) async {
-    // withConfidence is irrelevant for CTC — the log-prob is captured for free below.
-    final runOptions = OrtRunOptions();
-    final audioTensor =
-        OrtValueTensor.createTensorWithDataList(audio, [1, audio.length]);
-    final lengthTensor = OrtValueTensor.createTensorWithDataList(
-      Int64List.fromList([audio.length]),
-      [1],
-    );
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+      {required bool withConfidence}) {
+    final encOut = encOutputs[0];
+    if (encOut == null) return const [];
 
-    List<OrtValue?>? outputs;
+    final runOptions = OrtRunOptions();
+    List<OrtValue?> outs;
     try {
-      outputs = await _session!.runAsync(runOptions, {
-        _inWaveform: audioTensor,
-        _inLength: lengthTensor,
-      });
+      // Feed the encoder_out OrtValue straight into ctc_decoder (native handoff — no
+      // Dart materialization of the intermediate; only the final logprobs are read).
+      outs = _ctcSession!.run(runOptions, {_ctcIn: encOut});
     } finally {
-      audioTensor.release();
-      lengthTensor.release();
       runOptions.release();
     }
 
-    if (outputs == null || outputs.isEmpty) return const [];
     // logprobs: [1, T_enc, vocab+1] — already log-softmax, so exp(logProb) is a
     // probability in [0, 1] (no softmax needed, unlike Whisper's raw logits).
-    final logits = outputs[0]?.value as List;
+    final logits = outs[0]?.value as List;
     final frames = logits[0] as List; // [T_enc][vocab+1]
     final tokens = _decode(frames);
-    _releaseAll(outputs);
+    _releaseAll(outs);
     return tokens;
   }
 
@@ -327,16 +380,18 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
 
   @override
   void dispose() {
-    _session?.release();
+    _ctcSession?.release();
+    super.dispose();
   }
 }
 
-/// FastConformer **RNN-T (transducer)** transcriber
+/// FastConformer **RNN-T (transducer)** transcriber — the accurate head.
 ///
-/// `encoder.onnx` (super-encoder, waveform -> encoder_out) + fused `decoder_joint.onnx`
-/// (prediction-net LSTM + joint). A monotonic stateful greedy loop: blank advances time;
-/// a non-blank emits a token and advances the label + LSTM (h, c) state, capped by
-/// [maxSymbolsPerStep].
+/// Loads the fused `decoder_joint.onnx` (prediction-net LSTM + joint) on top of the
+/// shared super-encoder. A monotonic stateful greedy loop: blank advances time; a
+/// non-blank emits a token and advances the label + LSTM (h, c) state, capped by
+/// [maxSymbolsPerStep]. The joint emits RAW logits, so per-token confidence needs a
+/// softmax (only run when details are requested).
 class FastConformerRnntTranscriber extends FastConformerTranscriber {
   /// Cap on tokens emitted per encoder frame (prevents an infinite loop on a
   /// pathological joint). Mirrors NeMo's `max_symbols_per_step`.
@@ -344,7 +399,6 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
 
   FastConformerRnntTranscriber({this.maxSymbolsPerStep = 10});
 
-  OrtSession? _encoderSession;
   OrtSession? _decoderJointSession;
   int _predHidden = 640;
   int _predLayers = 1;
@@ -353,71 +407,37 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
   late List<String> _djIn;
 
   @override
-  Future<Result<void>> _loadGraphs(
+  Future<Result<void>> _loadHead(
       String modelDirectory, Map<String, dynamic> meta) async {
     try {
       _predHidden = (meta['pred_hidden'] as num?)?.toInt() ?? _predHidden;
       _predLayers = (meta['pred_rnn_layers'] as num?)?.toInt() ?? _predLayers;
-      final encoderOnnx = (meta['encoder_onnx'] as String?) ?? 'encoder.onnx';
-      final decoderJointOnnx =
-          (meta['decoder_joint_onnx'] as String?) ?? 'decoder_joint.onnx';
       _djIn = _decoderJointInputNames(meta); // throws on a malformed artifact
-
-      final onnxConfig = TranscriberOnnxConfig();
-      _encoderSession =
-          onnxConfig.createSession(await Utils.loadBytes('$modelDirectory/$encoderOnnx'));
-      _decoderJointSession = onnxConfig
-          .createSession(await Utils.loadBytes('$modelDirectory/$decoderJointOnnx'));
+      final djOnnx = (meta['decoder_joint_onnx'] as String?) ?? 'decoder_joint.onnx';
+      _decoderJointSession =
+          TranscriberOnnxConfig().createSession(await Utils.loadBytes('$modelDirectory/$djOnnx'));
       return Result.ok(null);
     } catch (e) {
       return Result.error(
-        Exception('Failed to load RNN-T graphs from <$modelDirectory>: $e'),
+        Exception('Failed to load decoder_joint.onnx from <$modelDirectory>: $e'),
       );
     }
   }
 
   @override
-  Future<List<_Token>> _decodeTokens(Float32List audio,
-      {required bool withConfidence}) async {
-    // (1) Super-encoder: raw waveform -> encoder embeddings.
-    final runOptions = OrtRunOptions();
-    final audioTensor =
-        OrtValueTensor.createTensorWithDataList(audio, [1, audio.length]);
-    final lengthTensor = OrtValueTensor.createTensorWithDataList(
-      Int64List.fromList([audio.length]),
-      [1],
-    );
-
-    // encChannels[d][t] = encoder_out[0, d, t]; encLen = valid time steps.
-    List encChannels = const [];
-    int encLen = 0;
-    List<OrtValue?>? encOutputs;
-    try {
-      encOutputs = await _encoderSession!.runAsync(runOptions, {
-        _inWaveform: audioTensor,
-        _inLength: lengthTensor,
-      });
-      if (encOutputs == null || encOutputs.isEmpty) return const [];
-      // encoder_out: [1, D, T_enc]. Batch is always 1 on-device: we transcribe a single
-      // utterance, so the input is built with batch=1 and encVal[0] drops it to [D][T_enc].
-      final encVal = encOutputs[0]?.value as List;
-      encChannels = encVal[0] as List; // [D][T_enc]
-      final tEnc = (encChannels.isEmpty) ? 0 : (encChannels[0] as List).length;
-      if (encOutputs.length > 1 && encOutputs[1]?.value != null) {
-        final lenVal = encOutputs[1]!.value as List;
-        encLen = (lenVal[0] as num).toInt();
-      } else {
-        encLen = tEnc;
-      }
-      if (encLen > tEnc) encLen = tEnc;
-    } finally {
-      audioTensor.release();
-      lengthTensor.release();
-      if (encOutputs != null) _releaseAll(encOutputs);
-      runOptions.release();
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+      {required bool withConfidence}) {
+    // RNN-T slices the encoder output per frame, so read it into a Dart list.
+    // encoder_out: [1, D, T_enc]; batch is always 1 on-device -> encVal[0] is [D][T_enc].
+    final encVal = encOutputs[0]?.value as List;
+    final encChannels = encVal[0] as List;
+    final tEnc = encChannels.isEmpty ? 0 : (encChannels[0] as List).length;
+    int encLen = tEnc;
+    if (encOutputs.length > 1 && encOutputs[1]?.value != null) {
+      encLen = ((encOutputs[1]!.value as List)[0] as num).toInt();
     }
+    if (encLen > tEnc) encLen = tEnc;
 
-    // (2) Monotonic greedy decode over the fused decoder_joint.
     return _decode(encChannels, encChannels.length, encLen,
         withConfidence: withConfidence);
   }
@@ -579,7 +599,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
 
   @override
   void dispose() {
-    _encoderSession?.release();
     _decoderJointSession?.release();
+    super.dispose();
   }
 }
