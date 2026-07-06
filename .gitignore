@@ -41,6 +41,9 @@ assets/transcribers/whisper/models/
 *.onnx
 !assets/**/*.onnx
 
+# transcriber assets generated via conversion scripts
+assets/transcribers
+
 # Native libraries for unit testing (see NATIVE_LIB_SETUP.md)
 *.dylib
 *.so

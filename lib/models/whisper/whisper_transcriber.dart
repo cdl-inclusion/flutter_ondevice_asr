@@ -42,9 +42,9 @@ class WhisperTranscriber implements Transcriber {
   Future<Result<void>> loadModel({
     required String modelDirectory,
     required String languageCode,
-    double tokensPerSecond = defaultTokensPerSecond,
+    double? tokensPerSecond,
   }) async {
-    _tokensPerSecond = tokensPerSecond;
+    _tokensPerSecond = tokensPerSecond ?? defaultTokensPerSecond;
     _modelPath = modelDirectory;
 
     final vocabFutureResult = _loadVocab(modelPath: modelDirectory);
