@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import '../common/result.dart';
 import 'model/transcription_result.dart';
 import 'models/fastconformer/fastconformer_transcriber.dart';
-import 'models/fastconformer/fastconformer_rnnt_transcriber.dart';
 import 'models/whisper/whisper_transcriber.dart';
 import 'transcriber_type.dart';
 
@@ -13,7 +12,7 @@ abstract class Transcriber {
       case TranscriberType.whisper:
         return WhisperTranscriber();
       case TranscriberType.fastConformer:
-        return FastConformerTranscriber();
+        return FastConformerCtcTranscriber();
       case TranscriberType.fastConformerRnnt:
         return FastConformerRnntTranscriber();
     }

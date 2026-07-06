@@ -7,7 +7,6 @@ import 'package:flutter_ondevice_asr/common/result.dart';
 import 'package:flutter_ondevice_asr/model/transcription_result.dart';
 import 'package:flutter_ondevice_asr/transcriber.dart';
 import 'package:flutter_ondevice_asr/models/fastconformer/fastconformer_transcriber.dart';
-import 'package:flutter_ondevice_asr/models/fastconformer/fastconformer_rnnt_transcriber.dart';
 import 'package:flutter_ondevice_asr/util/audio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -29,7 +28,7 @@ void main() {
       label: 'CTC super-encoder',
       modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/ctc_int8'),
       requiredFiles: const ['super_encoder.onnx'],
-      create: () => FastConformerTranscriber(),
+      create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
     );
@@ -52,7 +51,7 @@ void main() {
       label: 'CTC',
       modelDirectory: toAbsolutePath('assets/transcribers/fastconformer/ctc_int8'),
       requiredFiles: const ['super_encoder.onnx'],
-      create: () => FastConformerTranscriber(),
+      create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
     );
     _detailsTest(
