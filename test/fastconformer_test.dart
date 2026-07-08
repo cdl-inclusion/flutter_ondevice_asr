@@ -23,12 +23,12 @@ void main() {
 
   // One HYBRID artifact dir feeds both heads (shared super_encoder.onnx + ctc_decoder.onnx
   // + decoder_joint.onnx).
-  final hybridDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid_int8');
+  final modelDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid_int8');
 
   group('FastConformer super-encoder transcribe (jfk_asknot)', () {
     _headTest(
       label: 'CTC',
-      modelDirectory: hybridDir,
+      modelDirectory: modelDir,
       requiredFiles: const ['super_encoder.onnx', 'ctc_decoder.onnx'],
       create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
@@ -37,7 +37,7 @@ void main() {
 
     _headTest(
       label: 'RNN-T',
-      modelDirectory: hybridDir,
+      modelDirectory: modelDir,
       requiredFiles: const ['super_encoder.onnx', 'decoder_joint.onnx'],
       create: () => FastConformerRnntTranscriber(),
       testAudioFile: testAudioFile,
@@ -51,14 +51,14 @@ void main() {
   group('FastConformer word/segment details', () {
     _detailsTest(
       label: 'CTC',
-      modelDirectory: hybridDir,
+      modelDirectory: modelDir,
       requiredFiles: const ['super_encoder.onnx', 'ctc_decoder.onnx'],
       create: () => FastConformerCtcTranscriber(),
       testAudioFile: testAudioFile,
     );
     _detailsTest(
       label: 'RNN-T',
-      modelDirectory: hybridDir,
+      modelDirectory: modelDir,
       requiredFiles: const ['super_encoder.onnx', 'decoder_joint.onnx'],
       create: () => FastConformerRnntTranscriber(),
       testAudioFile: testAudioFile,
