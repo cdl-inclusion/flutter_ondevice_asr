@@ -23,6 +23,7 @@ void main() {
 
   // One HYBRID artifact dir feeds both heads (shared super_encoder.onnx + ctc_decoder.onnx
   // + decoder_joint.onnx).
+  // final modelDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid');
   final modelDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid_int8');
 
   group('FastConformer super-encoder transcribe (jfk_asknot)', () {
