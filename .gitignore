@@ -44,6 +44,11 @@ assets/transcribers/whisper/models/
 # transcriber assets generated via conversion scripts
 assets/transcribers
 
+# Python conversion tooling
+conversion_tooling/**/venv/
+conversion_tooling/**/venv_*/
+**/__pycache__/
+
 # Native libraries for unit testing (see NATIVE_LIB_SETUP.md)
 *.dylib
 *.so
