@@ -91,8 +91,9 @@ copy_variant() {
     ls -lh "$target_dir" | grep -E "(super_encoder|decoder|config|vocab)" | awk '{print "      " $9 " (" $5 ")"}'
 }
 
-# Copy both variants
-copy_variant "default"
+# Only the int8 variant is fully built (super_encoder + vocab) and bundled in pubspec.yaml.
+# The fp32 "default" variant is intentionally left as raw Optimum output by the converter
+# (see convert_whisper_to_onnx.py run_conversion: super_encoder/vocab built for int8 only).
 copy_variant "default_int8"
 
 echo ""
