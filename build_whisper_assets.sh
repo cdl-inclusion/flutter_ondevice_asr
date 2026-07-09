@@ -16,7 +16,7 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR"
-CONVERSION_DIR="$PROJECT_ROOT/conversion_tooling"
+CONVERSION_DIR="$PROJECT_ROOT/conversion_tooling/whisper"
 MODELS_DIR="$PROJECT_ROOT/models"  # Temporary build directory (gitignored)
 ASSETS_DIR="$PROJECT_ROOT/assets/transcribers/whisper/models"
 
@@ -99,14 +99,3 @@ echo ""
 echo "======================================================================="
 echo "✓ All assets built successfully!"
 echo "======================================================================="
-echo ""
-echo "Summary:"
-echo "  - Exported models from: $MODEL_ID"
-echo "  - Created super_encoder.onnx for each variant (preprocessor + encoder merged)"
-echo "  - Copied decoders and configs to assets/"
-echo ""
-echo "Temporary files:"
-echo "  - Source models: $MODELS_DIR (can be deleted or kept for caching)"
-echo ""
-echo "Bundled assets (shipped with app):"
-echo "  - $ASSETS_DIR/"
