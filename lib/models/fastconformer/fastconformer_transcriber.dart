@@ -6,6 +6,7 @@ import 'package:flutter_ondevice_asr/util/utils.dart';
 import 'package:logging/logging.dart';
 import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
+import '../../common/audio_constants.dart';
 import '../../common/result.dart';
 import '../../transcriber.dart';
 import '../../model/onnx_config.dart';
@@ -30,7 +31,7 @@ typedef _Token = ({int id, double logProb, int frame});
 /// the head graph to [_loadHead]; `transcribe` runs the encoder once and hands the
 /// outputs to [_decodeFromEncoder]. Raw waveform in — no Dart featurizer.
 abstract class FastConformerTranscriber implements Transcriber {
-  static const int sampleRate = 16000;
+  static const int sampleRate = kSampleRate;
 
   final _logger = Logger('FastConformerTranscriber');
   final _tokenizer = FastConformerTokenizer();

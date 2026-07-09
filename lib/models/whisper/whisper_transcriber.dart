@@ -6,6 +6,7 @@ import 'package:flutter_ondevice_asr/util/utils.dart';
 import 'package:logging/logging.dart';
 import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
+import '../../common/audio_constants.dart';
 import '../../common/result.dart';
 import '../../transcriber.dart';
 import '../../model/onnx_config.dart';
@@ -100,7 +101,7 @@ class WhisperTranscriber implements Transcriber {
     final encoded = await _runSuperEncoder(audio);
     final audioFeaturesTensor = encoded?[1] as OrtValueTensor;
 
-    final audioDuration = audio.length / 16000.0;
+    final audioDuration = audio.length / kSampleRate;
     final effectiveMaxTokens =
         maxOutputTokens ??
             (audioDuration * _tokensPerSecond).ceil().clamp(10, 224);
@@ -144,7 +145,7 @@ class WhisperTranscriber implements Transcriber {
       }
     }
 
-    final duration = audio.length / 16000.0; // Assuming 16kHz sample rate
+    final duration = audio.length / kSampleRate;
 
     return Result.ok(
       TranscriptionResult(
