@@ -17,12 +17,17 @@ Python usage:
 """
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
-import librosa
 import numpy as np
 import onnxruntime as ort
+
+# Shared interface + session/audio helpers (onnx_transcriber.py sits next to this file).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from onnx_transcriber import Transcriber, load_audio, make_session
 
 
 class WhisperTokenizer:
@@ -108,16 +113,16 @@ class WhisperTokenizer:
         return "".join(result)
 
 
-class OnnxWhisperTranscriber:
+class OnnxWhisperTranscriber(Transcriber):
     """ONNX Whisper ASR transcriber implementation."""
 
-    SAMPLE_RATE = 16000
     DEFAULT_TOKENS_PER_SECOND = 6.0
 
     def __init__(
         self,
         language: str = "en",
         tokens_per_second: float = DEFAULT_TOKENS_PER_SECOND,
+        num_threads: int = 8,
         verbose: bool = False,
     ):
         """Initialize the transcriber.
@@ -125,10 +130,12 @@ class OnnxWhisperTranscriber:
         Args:
             language: Language code (e.g., 'en', 'de', 'fr').
             tokens_per_second: Multiplier for dynamic max tokens calculation.
+            num_threads: CPU threads for the ORT sessions (intra + inter op).
             verbose: Enable verbose logging.
         """
         self.language = language
         self.tokens_per_second = tokens_per_second
+        self.num_threads = num_threads
         self.verbose = verbose
 
         self.super_encoder_session: Optional[ort.InferenceSession] = None
@@ -185,34 +192,19 @@ class OnnxWhisperTranscriber:
         # Load control tokens from generation config
         self._load_control_tokens(generation_config_path)
 
-        # Load ONNX sessions (CPU-only, as the ONNX model is designed for mobile/edge deployment)
-        session_options = ort.SessionOptions()
-        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Enable multi-threading for faster CPU inference
-        session_options.intra_op_num_threads = 8
-        session_options.inter_op_num_threads = 8
-
-        # Use CPU only - the ONNX model has ops optimized for mobile, not CUDA
-        providers = ["CPUExecutionProvider"]
-        print(f"[ONNX] Using CPU execution provider with 8 threads (model designed for mobile deployment)")
-
+        # CPU-only ORT sessions (the ONNX model has ops optimized for mobile, not CUDA).
         if self.verbose:
+            print(f"[ONNX] CPU execution provider with {self.num_threads} threads")
             print(f"Loading Super Encoder from: {encoder_path}")
-        self.super_encoder_session = ort.InferenceSession(
-            encoder_path, sess_options=session_options, providers=providers
-        )
+        self.super_encoder_session = make_session(encoder_path, self.num_threads)
 
         if self.verbose:
             print(f"Loading Decoder from: {decoder_path}")
-        self.decoder_session = ort.InferenceSession(
-            decoder_path, sess_options=session_options, providers=providers
-        )
+        self.decoder_session = make_session(decoder_path, self.num_threads)
 
         if self.verbose:
             print(f"Loading Decoder with Past from: {decoder_with_past_path}")
-        self.decoder_with_past_session = ort.InferenceSession(
-            decoder_with_past_path, sess_options=session_options, providers=providers
-        )
+        self.decoder_with_past_session = make_session(decoder_with_past_path, self.num_threads)
 
         if self.verbose:
             print("Models loaded successfully!")
@@ -269,12 +261,6 @@ class OnnxWhisperTranscriber:
                 f"lang={self.language_token}, transcribe={self.transcribe_token}, "
                 f"notimestamps={self.no_timestamps_token}"
             )
-
-    def _load_audio(self, audio_path: str) -> np.ndarray:
-        """Load and preprocess audio file."""
-        # Load audio at 16kHz mono
-        audio, _ = librosa.load(audio_path, sr=self.SAMPLE_RATE, mono=True)
-        return audio.astype(np.float32)
 
     def _run_super_encoder(self, audio: np.ndarray) -> np.ndarray:
         """Run super encoder (preprocessor + encoder combined)."""
@@ -418,7 +404,7 @@ class OnnxWhisperTranscriber:
             raise RuntimeError("Models not loaded. Call load() first.")
 
         # Load audio
-        audio = self._load_audio(audio_path)
+        audio = load_audio(audio_path)
 
         # Run super encoder
         audio_features = self._run_super_encoder(audio)

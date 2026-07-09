@@ -24,12 +24,14 @@ NeMo hybrid FastConformer (e.g. nvidia/stt_en_fastconformer_hybrid_large_pc)
 flutter_ondevice_asr/
 ├── build_fastconformer_assets.sh            # ⭐ run this (from the repo root)
 ├── models/fastconformer/                    # temp build dir (gitignored) — hybrid/ + hybrid_int8/
-├── conversion_tooling/fastconformer/        # the conversion tooling (self-contained, CPU)
-│   ├── convert_fastconformer_to_onnx_lib.py        # convert() + quantize() — all the logic
-│   ├── convert_fastconformer_validation.py         # validate_hybrid() vs NeMo (synthetic)
+├── conversion_tooling/                      # shared runtime modules (used by benchmark_local.py)
+│   ├── onnx_transcriber.py                          # shared Transcriber interface + helpers
 │   ├── onnx_fastconformer_transcriber.py           # NeMo-free ONNX runtime (Dart-port reference)
-│   ├── convert_fastconformer.py      # local runner (this is what the script calls)
-│   └── requirements.txt           # local pip deps (NeMo stack)
+│   └── fastconformer/                        # the conversion tooling (self-contained, CPU)
+│       ├── convert_fastconformer_to_onnx_lib.py    # convert() + quantize() — all the logic
+│       ├── convert_fastconformer_validation.py     # validate_hybrid() vs NeMo (synthetic)
+│       ├── convert_fastconformer.py                # local runner (this is what the script calls)
+│       └── requirements.txt                        # local pip deps (NeMo stack)
 └── assets/transcribers/fastconformer/
     └── hybrid_int8/                          # bundled on-device asset (~149 MB)
         ├── super_encoder.onnx  ctc_decoder.onnx  decoder_joint.onnx  tokens.txt  meta.json

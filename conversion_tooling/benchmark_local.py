@@ -31,7 +31,12 @@ import sys
 import time
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent  # conversion_tooling/ (whisper/ + fastconformer/ live here)
+import soundfile as sf
+
+# These transcribers live next to this file; running it as a script puts that dir on sys.path.
+from onnx_fastconformer_transcriber import OnnxFastConformerCTC, OnnxFastConformerRNNT
+from onnx_whisper_transcriber import OnnxWhisperTranscriber
+from onnx_transcriber import Transcriber
 
 
 # --------------------------------------------------------------------------- io
@@ -57,40 +62,26 @@ def gather_audio(spec: str, limit: int | None) -> list[str]:
 
 
 def audio_duration(path: str) -> float:
-    import soundfile as sf
     info = sf.info(path)
     return info.frames / float(info.samplerate)
 
 
-# --------------------------------------------------------------- backends (lazy)
-def make_transcriber(backend: str, model_dir: str, num_threads: int, language: str):
-    """Return a ``path -> text`` callable for the chosen NeMo-free ONNX runtime.
+# -------------------------------------------------------------------- backends
+def make_transcriber(backend: str, model_dir: str, num_threads: int, language: str) -> Transcriber:
+    """Load the chosen ONNX runtime and return its ``Transcriber``.
 
-    Each runtime lives in its own subfolder (fastconformer/ or whisper/); we add that to
-    the path lazily so importing this file never pulls both stacks."""
-    p = Path(model_dir)
-    if p.is_file() or p.suffix == ".nemo":
-        raise SystemExit(f"--backend {backend} expects an ONNX artifact DIRECTORY, got a file: {model_dir}")
-
+    Both runtimes share the ``Transcriber`` interface (load() + transcribe()) and the
+    num_threads knob."""
     if backend in ("fc_ctc", "fc_rnnt"):
-        sys.path.insert(0, str(_HERE / "fastconformer"))
-        from onnx_fastconformer_transcriber import OnnxFastConformerCTC, OnnxFastConformerRNNT
         cls = OnnxFastConformerCTC if backend == "fc_ctc" else OnnxFastConformerRNNT
         t = cls(num_threads=num_threads, verbose=True)
-        t.load(model_dir)
-        return t.transcribe
+    elif backend == "whisper":
+        t = OnnxWhisperTranscriber(language=language, num_threads=num_threads, verbose=True)
+    else:
+        raise SystemExit(f"unknown --backend {backend!r}")
 
-    if backend == "whisper":
-        sys.path.insert(0, str(_HERE / "whisper"))
-        from onnx_whisper_transcriber import OnnxWhisperTranscriber
-        # NB: OnnxWhisperTranscriber has no num_threads knob — it uses ORT defaults. We set
-        # OMP_NUM_THREADS above (best-effort); for a strictly fair FC-vs-Whisper thread
-        # comparison, add a num_threads arg to the Whisper transcriber's sessions.
-        t = OnnxWhisperTranscriber(language=language, verbose=True)
-        t.load(model_dir)
-        return t.transcribe
-
-    raise SystemExit(f"unknown --backend {backend!r}")
+    t.load(model_dir)
+    return t
 
 
 # ----------------------------------------------------------------------- timing
@@ -173,7 +164,7 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=1,
                     help="timed runs per file; median is kept (default 1)")
     ap.add_argument("--num_threads", type=int, default=1,
-                    help="CPU threads (default 1; applies to FastConformer — Whisper uses ORT defaults)")
+                    help="CPU threads for the ORT sessions (default 1; both backends)")
     ap.add_argument("--limit", type=int, default=None, help="cap number of files")
     ap.add_argument("--compare", nargs="+", metavar="JSON",
                     help="merge result JSONs into a comparison table and exit")
@@ -186,16 +177,16 @@ def main() -> int:
     if not (args.backend and args.model and args.audio):
         ap.error("--backend, --model, and --audio are required (unless --compare)")
 
-    # Best-effort thread cap for backends that don't take num_threads (set before ORT import).
+    # Both backends set ORT threads explicitly; this also caps OMP-based libs (numpy/librosa).
     os.environ.setdefault("OMP_NUM_THREADS", str(args.num_threads))
 
     paths = gather_audio(args.audio, args.limit)
     print(f"[BENCH] backend={args.backend} files={len(paths)} threads={args.num_threads} "
           f"warmup={args.warmup} repeats={args.repeats}")
 
-    transcribe = make_transcriber(args.backend, args.model, args.num_threads, args.language)
+    transcriber = make_transcriber(args.backend, args.model, args.num_threads, args.language)
 
-    summary = benchmark(transcribe, paths, args.warmup, args.repeats)
+    summary = benchmark(transcriber.transcribe, paths, args.warmup, args.repeats)
     print(f"\n[BENCH] {args.backend}: median {summary['median_latency_ms']:.1f} ms/utt | "
           f"p90 {summary['p90_latency_ms']:.1f} ms | aggregate RTF "
           f"{summary['aggregate_rtf']:.4f} | {summary['num_files']} files")

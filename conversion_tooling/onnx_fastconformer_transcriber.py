@@ -3,26 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import onnxruntime as ort
 
-
-def _make_session(onnx_path: Path, num_threads: int) -> ort.InferenceSession:
-    so = ort.SessionOptions()
-    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    so.intra_op_num_threads = num_threads
-    so.inter_op_num_threads = num_threads
-    return ort.InferenceSession(str(onnx_path), sess_options=so,
-                                providers=["CPUExecutionProvider"])
-
-
-def _load_audio(path, sr: int) -> np.ndarray:
-    import librosa
-    audio, _ = librosa.load(str(path), sr=sr, mono=True)
-    return audio.astype(np.float32)
+# Shared interface + session/audio helpers (onnx_transcriber.py sits next to this file,
+# both locally in conversion_tooling/ and flat-mounted in /root on Modal).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from onnx_transcriber import Transcriber, load_audio, make_session
 
 
 def _load_tokens(tokens_path: Path) -> list[str]:
@@ -61,12 +53,10 @@ def ctc_greedy_decode(log_probs: np.ndarray, blank_id: int) -> list[int]:
     return out
 
 
-class OnnxFastConformerCTC:
+class OnnxFastConformerCTC(Transcriber):
     """CTC transcriber over the hybrid artifact: shared ``super_encoder`` (waveform ->
     encoder_out) then the standalone ``ctc_decoder`` (encoder_out -> logprobs), greedy
     CTC + tokens.txt detok. Raw waveform in — no featurizer."""
-
-    SAMPLE_RATE = 16000
 
     def __init__(self, num_threads: int = 4, verbose: bool = False):
         self.verbose = verbose
@@ -94,8 +84,8 @@ class OnnxFastConformerCTC:
 
         se_onnx = self.meta.get("super_encoder_onnx", "super_encoder.onnx")
         ctc_onnx = self.meta.get("ctc_decoder_onnx", "ctc_decoder.onnx")
-        self.enc = _make_session(model_dir / se_onnx, self._num_threads)
-        self.ctc = _make_session(model_dir / ctc_onnx, self._num_threads)
+        self.enc = make_session(model_dir / se_onnx, self._num_threads)
+        self.ctc = make_session(model_dir / ctc_onnx, self._num_threads)
 
         tokens_path = model_dir / "tokens.txt"
         if not tokens_path.exists():
@@ -123,18 +113,16 @@ class OnnxFastConformerCTC:
     def transcribe(self, signal_or_path) -> str:
         if self.enc is None:
             raise RuntimeError("Call load() first.")
-        signal = _load_audio(signal_or_path, self.SAMPLE_RATE) \
+        signal = load_audio(signal_or_path) \
             if isinstance(signal_or_path, (str, Path)) \
             else np.asarray(signal_or_path, dtype=np.float32)
         return self.decode(self.log_probs(signal))
 
 
-class OnnxFastConformerRNNT:
+class OnnxFastConformerRNNT(Transcriber):
     """RNN-T transcriber over the hybrid artifact: shared ``super_encoder`` (waveform ->
     encoder_out) then a monotonic greedy loop over the fused ``decoder_joint``. Raw
     waveform in — no featurizer; detok via tokens.txt."""
-
-    SAMPLE_RATE = 16000
 
     def __init__(self, num_threads: int = 4, verbose: bool = False,
                  max_symbols_per_step: int = 10):
@@ -168,8 +156,8 @@ class OnnxFastConformerRNNT:
 
         se_onnx = self.meta.get("super_encoder_onnx", "super_encoder.onnx")
         dj_onnx = self.meta.get("decoder_joint_onnx", "decoder_joint.onnx")
-        self.enc = _make_session(model_dir / se_onnx, self._num_threads)
-        self.dj = _make_session(model_dir / dj_onnx, self._num_threads)
+        self.enc = make_session(model_dir / se_onnx, self._num_threads)
+        self.dj = make_session(model_dir / dj_onnx, self._num_threads)
 
         tokens_path = model_dir / "tokens.txt"
         if not tokens_path.exists():
@@ -223,7 +211,7 @@ class OnnxFastConformerRNNT:
     def transcribe(self, signal_or_path) -> str:
         if self.enc is None:
             raise RuntimeError("Call load() first.")
-        signal = _load_audio(signal_or_path, self.SAMPLE_RATE) \
+        signal = load_audio(signal_or_path) \
             if isinstance(signal_or_path, (str, Path)) \
             else np.asarray(signal_or_path, dtype=np.float32)
         enc_out, enc_len = self._encode(signal)

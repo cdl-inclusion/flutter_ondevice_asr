@@ -15,10 +15,10 @@ _ENC_PARITY_THRESHOLD = 1e-2  # max|Δ| on encoder activations (mirrors the CTC 
 
 
 def _import_token_helpers():
-    """Import the runtime detok/greedy helpers from onnx_fastconformer_transcriber, which is
-    co-located with this file (same dir locally; copied to /root in the Modal image)."""
+    """Import the runtime detok/greedy helpers from onnx_fastconformer_transcriber (one dir
+    up in conversion_tooling/ locally."""
     here = os.path.dirname(os.path.abspath(__file__))
-    for p in (here, "/root"):
+    for p in (os.path.dirname(here), here, "/root"):
         if os.path.isdir(p) and p not in sys.path:
             sys.path.insert(0, p)
     from onnx_fastconformer_transcriber import _load_tokens, _detok, ctc_greedy_decode
