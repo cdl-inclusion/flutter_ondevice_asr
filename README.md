@@ -216,7 +216,7 @@ this file in chrome://tracing.
 
 ```
 cd example/android
-./gradlew app:assembleProfile -Ptarget="integration_test/whisper_test.dart" -Pdart-defines=RklSRUJBU0U9dHJ1ZQ==
+./gradlew app:assembleProfile -Ptarget="integration_test/whisper_non_streaming_firebase_performance_test.dart"
 ./gradlew app:assembleAndroidTest
 
 gcloud firebase test android run --type instrumentation \
