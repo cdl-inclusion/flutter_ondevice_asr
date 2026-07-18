@@ -13,12 +13,9 @@ void main() {
   const testAudioFile = 'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
-  const modelDirectory = 'assets/transcribers/whisper/models/whisper_tiny/default_int8';
+  // One HYBRID artifact serves BOTH heads (shared super_encoder + ctc_decoder + decoder_joint).
+  const modelDirectory = 'assets/transcribers/fastconformer/hybrid_int8';
   const language = 'en';
-
-  // Alternative test audio:
-  // const testAudioFile = 'packages/flutter_ondevice_asr/assets/audio/crisp_autumn.wav';
-  // const expectedTranscript = 'crisp autumn leaves crunch underfoot';
 
   setUp(() {
     Logger.root.level = Level.ALL;
@@ -27,16 +24,30 @@ void main() {
     });
   });
 
-  testWidgets('transcribe test audio (Whisper)', (tester) async {
+  // FastConformer output differs only cosmetically from the reference (spaces before
+  // punctuation; CTC "ask" vs RNN-T "Ask"), so compare P&C-/whitespace-invariant.
+
+  testWidgets('transcribe test audio (FastConformer CTC)', (tester) async {
     await runTranscribeIntegrationTest(
-      type: TranscriberType.whisper,
+      type: TranscriberType.fastConformer,
       modelDirectory: modelDirectory,
       language: language,
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
-      // Whisper matches the reference exactly (it emits standard punctuation/casing).
-      compareNormalized: false,
-      label: 'Whisper',
+      compareNormalized: true,
+      label: 'FastConformer CTC',
+    );
+  });
+
+  testWidgets('transcribe test audio (FastConformer RNN-T)', (tester) async {
+    await runTranscribeIntegrationTest(
+      type: TranscriberType.fastConformerRnnt,
+      modelDirectory: modelDirectory,
+      language: language,
+      testAudioFile: testAudioFile,
+      expectedTranscript: expectedTranscript,
+      compareNormalized: true,
+      label: 'FastConformer RNN-T',
     );
   });
 }

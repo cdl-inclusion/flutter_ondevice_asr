@@ -10,13 +10,28 @@ Uses the onnx-asr preprocessor implementation.
 TODO mention licencse and attribution for onnx-asr code
 """
 
+import os
+import sys
+
 import numpy as np
 import torchaudio
 from onnxscript import DOUBLE, FLOAT, INT64, script
-# Use opset18 to match the encoder's opset (for merging into super encoder)
-# Supports HannWindow, STFT and all signal processing operators
-# Compatible with onnxruntime_v2: ^1.23.2 which uses ONNX Runtime 1.22+
+# Use opset18 to match the encoder's opset (for merging into super encoder).
+# Supports HannWindow, STFT and all signal processing operators.
+# Compatible with onnxruntime_v2: ^1.23.2 which uses ONNX Runtime 1.22+.
+# NOTE: onnxscript selects the opset by WHICH module you import (opset18), not by an
+# int argument, so this can't be driven from ONNX_OPSET directly. We guard against
+# silent drift instead: if the shared constant changes, bump the import below to match.
 from onnxscript import opset18 as op
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from onnx_conversion_constants import ONNX_OPSET
+
+assert op.version == ONNX_OPSET, (
+    f"whisper_preprocessor imports onnxscript.opset{op.version}, but "
+    f"ONNX_OPSET={ONNX_OPSET}. Update the `from onnxscript import opsetNN as op` "
+    "import to match the shared constant."
+)
 
 # Whisper constants
 chunk_length = 30

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from transformers import WhisperProcessor, WhisperTokenizer
 import os, shutil
+import sys
 import json
 import time
 import argparse
@@ -34,8 +35,12 @@ import onnx
 from onnx import compose
 from whisper_preprocessor import WhisperPreprocessor80
 
-# ONNX IR version to use for all models (for compatibility)
-IR_VERSION = 8
+# ONNX IR version, shared with other converters so the app's single
+# bundled ONNX Runtime loads both. Lives one dir up in conversion_tooling/.
+# (Opset version is enforced separately: Optimum defaults to it and whisper_preprocessor
+# hardcodes onnxscript.opset18 — see onnx_conversion_constants.ONNX_OPSET.)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from onnx_conversion_constants import ONNX_IR_VERSION as IR_VERSION
 
 
 def convert_to_onnx(original_model_path, default_onnx_folder):

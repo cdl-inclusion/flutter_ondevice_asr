@@ -69,13 +69,12 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
-  assets:
-    - packages/flutter_ondevice_asr/assets/transcribers/whisper/models/whisper_tiny/default_int8/
-    - packages/flutter_ondevice_asr/assets/audio/
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
+  # NOTE: transcriber + audio assets are bundled AUTOMATICALLY from the flutter_ondevice_asr
+  # package (they're declared in THAT package's pubspec) and accessed at runtime via
+  # `packages/flutter_ondevice_asr/...`. Do NOT re-list them here: a package-asset DIRECTORY
+  # in an app's pubspec is read as a literal app path, which fails with
+  # "unable to find directory entry in pubspec.yaml: .../example/packages/...".
+  # See https://flutter.dev/to/asset-from-package
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
