@@ -1,0 +1,104 @@
+name: "Performance test - whisper tiny on-device inference"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: environment
+        description: Select the environment
+
+jobs:
+  build:
+    name: Performance test - whisper tiny on-device inference
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+
+    steps:
+      #1 Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      #2 Setup Java
+      - name: Set Up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      #3.a Setup Flutter
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.2
+      - run: |
+          flutter --version
+          flutter doctor --verbose
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      #4 Install Dependencies & set android and iOS app bundle-ids
+      - name: Install Dependencies
+        run: |
+          flutter pub get
+
+      - name: Install Firebase CLI
+        run: |
+          sudo npm i -g firebase-tools
+
+      - name : Authenticate google github actions
+        uses: 'google-github-actions/auth@v3'
+        with:
+          credentials_json: ${{ secrets.GOOGLE_SA_KEY }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v3'
+
+      - name: 'Set Google Project underlying Firebase Project'
+        run: gcloud config set project ${{ secrets.PROJECT_ID }}
+
+      - name: 'Download and setup whisper tiny model in project asset'
+        run: |
+          mkdir -p assets/transcribers/whisper/models/whisper_tiny/
+          gcloud storage cp ${{ secrets.WHISPER_TINY_MODEL_ZIP_BUCKET_PATH }} .
+          unzip whisper_tiny_int8.zip -d assets/transcribers/whisper/models/whisper_tiny
+
+      #6 Building APK
+      - name: Build APK and trigger test on Pixel 8a and Galaxy Tab A9+
+        timeout-minutes: 20
+        env:
+          CI: true
+        run: |
+          cd example/android
+          gradle wrapper
+          ./gradlew app:assembleProfile -Ptarget="integration_test/whisper_non_streaming_firebase_performance_test.dart"
+          ./gradlew app:assembleAndroidTest
+          gcloud firebase test android run --type instrumentation \
+            --app ../build/app/outputs/apk/profile/app-profile.apk \
+            --test ../build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            --device model=gta9pwifi,version=34,locale=en,orientation=portrait \
+            --device model=akita,version=34,locale=en,orientation=portrait \
+            --device model=bluejay,version=32,locale=en,orientation=portrait \
+            --timeout 15m \
+            --directories-to-pull /sdcard/Documents
+
+      - name: Pull performance traces
+        run: |
+          result=`gcloud storage ls ${{ secrets.TEST_LAB_OUTPUT_BUCKET }} | sort -k2r | tail -n 1`
+          result_pixel8a="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
+          result_tab9p="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
+          result_pixel6a="${result}bluejay-32-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
+          gcloud storage cp $result_pixel8a performance_trace_pixel_8a.json
+          gcloud storage cp $result_tab9p performance_trace_galaxy_tab_9p.json
+          gcloud storage cp $result_pixel6a performance_trace_pixel_6a.json
+
+      - name : Upload performance traces to workflow artifacts
+        uses: 'actions/upload-artifact@v7'
+        with:
+          name: performance-traces
+          path: |
+            performance_trace_pixel_8a.json
+            performance_trace_galaxy_tab_9p.json
+            performance_trace_pixel_6a.json
