@@ -1,4 +1,4 @@
-name: "Performance test - whisper tiny on-device inference"
+name: "Performance test - FastConformer hybrid int8 inference"
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Performance test - whisper tiny on-device inference
+    name: Performance test - FastConformer hybrid int8 inference
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment }}
@@ -61,9 +61,9 @@ jobs:
 
       - name: 'Download and setup whisper tiny model in project asset'
         run: |
-          mkdir -p assets/transcribers/whisper/models/whisper_tiny/
-          gcloud storage cp ${{ secrets.WHISPER_TINY_MODEL_ZIP_BUCKET_PATH }} .
-          unzip whisper_tiny_int8.zip -d assets/transcribers/whisper/models/whisper_tiny
+          mkdir -p assets/transcribers/fastconformer/hybrid_int8
+          gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_INT8_ZIP_BUCKET_PATH }} .
+          unzip whisper_tiny_int8.zip -d assets/transcribers/fastconformer/hybrid_int8
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a and Galaxy Tab A9+
@@ -73,28 +73,41 @@ jobs:
         run: |
           cd example/android
           gradle wrapper
-          ./gradlew app:assembleProfile -Ptarget="integration_test/whisper_non_streaming_firebase_performance_test.dart"
+          ./gradlew app:assembleProfile -Ptarget="integration_test/fastconformer_firebase_performance_test.dart"
           ./gradlew app:assembleAndroidTest
           gcloud firebase test android run --type instrumentation \
             --app ../build/app/outputs/apk/profile/app-profile.apk \
             --test ../build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
             --device model=gta9pwifi,version=34,locale=en,orientation=portrait \
             --device model=akita,version=34,locale=en,orientation=portrait \
+            --device model=bluejay,version=32,locale=en,orientation=portrait \
             --timeout 15m \
             --directories-to-pull /sdcard/Documents
 
       - name: Pull performance traces
         run: |
           result=`gcloud storage ls ${{ secrets.TEST_LAB_OUTPUT_BUCKET }} | sort -k2r | tail -n 1`
-          result_pixel8a="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
-          result_tab9p="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
-          gcloud storage cp $result_pixel8a performance_trace_pixel_8a.json
-          gcloud storage cp $result_tab9p performance_trace_galaxy_tab_9p.json
+          result_pixel8a_ctc="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
+          result_pixel6a_ctc="${result}bluejay-32-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
+          result_tab9p_ctc="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
+          result_pixel8a_rnnt="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace_rnnt.json"
+          result_pixel6a_rnnt="${result}bluejay-32-en-portrait/artifacts/sdcard/Documents/performance_trace_rnnt.json"
+          result_tab9p_rnnt="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace_rnnt.json"
+          gcloud storage cp $result_pixel8a_ctc performance_trace_pixel_8a_ctc.json
+          gcloud storage cp $result_pixel8a_rnnt performance_trace_pixel_8a_rnnt.json
+          gcloud storage cp $result_pixel6a_ctc performance_trace_pixel_6a_ctc.json
+          gcloud storage cp $result_pixel6a_rnnt performance_trace_pixel_6a_rnnt.json
+          gcloud storage cp $result_tab9p_ctc performance_trace_galaxy_tab_9p_ctc.json
+          gcloud storage cp $result_tab9p_rnnt performance_trace_galaxy_tab_9p_rnnt.json
 
       - name : Upload performance traces to workflow artifacts
         uses: 'actions/upload-artifact@v7'
         with:
           name: performance-traces
           path: |
-            performance_trace_pixel_8a.json
-            performance_trace_galaxy_tab_9p.json
+            performance_trace_pixel_8a_ctc.json
+            performance_trace_pixel_8a_rnnt.json
+            performance_trace_pixel_6a_ctc.json
+            performance_trace_pixel_6a_rnnt.json
+            performance_trace_galaxy_tab_9p_ctc.json
+            performance_trace_galaxy_tab_9p_rnnt.json
