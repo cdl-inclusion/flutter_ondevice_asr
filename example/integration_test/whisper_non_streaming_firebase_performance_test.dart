@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter_ondevice_asr/transcriber_type.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:logging/logging.dart';
 
-import 'whisper_non_streaming_test_util.dart';
+import 'transcribe_test_helper.dart';
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -32,17 +33,23 @@ void main() {
   });
 
   testWidgets('transcribe test audio', (WidgetTester tester) async {
-      final timeline = await binding.traceTimeline(() async {
-        await WhisperNonStreamingTestUtil.testNonStreamingTranscription(
-            testAudioFile: testAudioFile,
-            expectedTranscript: expectedTranscript,
-            modelDirectory: modelDirectory,
-            language: language);
-      }, streams: ["Dart"]);
+    final timeline = await binding.traceTimeline(() async {
+      await runTranscribeIntegrationTest(
+        type: TranscriberType.whisper,
+        modelDirectory: modelDirectory,
+        language: language,
+        testAudioFile: testAudioFile,
+        expectedTranscript: expectedTranscript,
+        // Whisper matches the reference exactly (it emits standard punctuation/casing).
+        compareNormalized: false,
+        label: 'Whisper',
+      );
+    }, streams: ["Dart"]);
 
-      final String traceData = const JsonEncoder.withIndent('  ').convert(
-          timeline.toJson());
-      final file = File('/sdcard/Documents/performance_trace.json');
-      await file.writeAsString(traceData);
+    final String traceData = const JsonEncoder.withIndent(
+      '  ',
+    ).convert(timeline.toJson());
+    final file = File('/sdcard/Documents/performance_trace.json');
+    await file.writeAsString(traceData);
   });
 }
