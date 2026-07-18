@@ -61,10 +61,10 @@ jobs:
 
       - name: 'Download and setup fast conformer fp32 model in project asset'
         run: |
+          sed -i "s|hybrid_int8|hybrid|g" example/integration_test/fastconformer_firebase_performance_test.dart
           mkdir -p assets/transcribers/fastconformer/hybrid
           gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_FP32_ZIP_BUCKET_PATH }} .
           unzip fastconformer_hybrid_fp32.zip -d assets/transcribers/fastconformer/hybrid
-          sed -i '' "s|hybrid_int8|hybrid|g" example/integration_test/fastconformer_firebase_performance_test.dart
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a and Galaxy Tab A9+
