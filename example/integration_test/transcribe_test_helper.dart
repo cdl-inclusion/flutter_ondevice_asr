@@ -2,6 +2,7 @@
 
 // ignore_for_file: avoid_print — integration-test progress logging; print is intentional.
 
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'dart:math';
 
@@ -81,7 +82,9 @@ Future<void> runTranscribeIntegrationTest({
     stepSw
       ..reset()
       ..start();
+    dev.Timeline.startSync('${type == .fastConformer ? 'ctc' : 'rnnt'}.transcribe');
     final result = await transcriber.transcribe(audio) as Ok<TranscriptionResult>;
+    dev.Timeline.finishSync();
     durations.add(stepSw.elapsedMilliseconds.toDouble());
     if (run == 0) transcript = result.value.text;
   }

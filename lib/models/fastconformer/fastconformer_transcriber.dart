@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -76,6 +77,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     required String languageCode,
     double? tokensPerSecond, // ignored: CTC is non-autoregressive; RNN-T is frame-bounded
   }) async {
+    final loadModelTask = dev.TimelineTask()..start('load_model');
     _modelPath = modelDirectory;
 
     // meta.json -> blank id, frame stride, super-encoder IO names + graph name.
@@ -127,6 +129,7 @@ abstract class FastConformerTranscriber implements Transcriber {
       'Loaded $runtimeType: languageCode=$languageCode, blank=$_blankId, '
       'vocab=${_tokenizer.vocabSize}, in=($_inWaveform, $_inLength)',
     );
+    loadModelTask.finish();
     return Result.ok(null);
   }
 
@@ -140,6 +143,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     bool getSegmentDetails = false, // supported: segment confidence
     int? maxOutputTokens,
   }) async {
+    final transcribeTask = dev.TimelineTask()..start('transcribe');
     if (!_loaded) {
       return Result.error(Exception('Call loadModel() first.'));
     }
@@ -164,8 +168,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     }
 
     final duration = audio.length / sampleRate;
-    return Result.ok(
-      TranscriptionResult(
+    final transcribeResult =  TranscriptionResult(
         text: transcript,
         isFinal: segmentEnd,
         durationInSeconds: duration,
@@ -173,14 +176,16 @@ abstract class FastConformerTranscriber implements Transcriber {
         words: words,
         segments: (segmentEnd && transcript.isNotEmpty) ? [transcript] : null,
         confidences: segmentConfidences,
-      ),
     );
+    transcribeTask.finish();
+    return Result.ok(transcribeResult);
   }
 
   /// Run the shared super-encoder once, then hand its outputs to the head's
   /// [_decodeFromEncoder]. Encoder outputs are released here after decoding.
   Future<List<_Token>> _runEncoderAndDecode(Float32List audio,
       {required bool withConfidence}) async {
+    dev.Timeline.startSync('run_super_encoder');
     final runOptions = OrtRunOptions();
     final audioTensor =
         OrtValueTensor.createTensorWithDataList(audio, [1, audio.length]);
@@ -203,6 +208,7 @@ abstract class FastConformerTranscriber implements Transcriber {
 
     if (encOutputs == null || encOutputs.isEmpty) return const [];
     try {
+      dev.Timeline.finishSync();
       return _decodeFromEncoder(encOutputs, withConfidence: withConfidence);
     } finally {
       _releaseAll(encOutputs);
@@ -326,6 +332,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
   @override
   List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
       {required bool withConfidence}) {
+    dev.Timeline.startSync('decode_from_encoder');
     final encOut = encOutputs[0];
     if (encOut == null) return const [];
 
@@ -345,6 +352,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
     final frames = logits[0] as List; // [T_enc][vocab+1]
     final tokens = _decode(frames);
     _releaseAll(outs);
+    dev.Timeline.finishSync();
     return tokens;
   }
 
@@ -354,6 +362,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
   ///     "a blank a" -> 'a a'), drop blank.
   /// Each emitted token carries its log-prob at the emitting frame and that frame index.
   List<_Token> _decode(List frames) {
+    dev.Timeline.startSync('decode');
     final out = <_Token>[];
     int prev = _blankId;
     for (int t = 0; t < frames.length; t++) {
@@ -376,6 +385,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
       }
       prev = best;
     }
+    dev.Timeline.finishSync();
     return out;
   }
 
@@ -411,12 +421,14 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
   Future<Result<void>> _loadHead(
       String modelDirectory, Map<String, dynamic> meta) async {
     try {
+      dev.Timeline.startSync('rnnt.load_head');
       _predHidden = (meta['pred_hidden'] as num?)?.toInt() ?? _predHidden;
       _predLayers = (meta['pred_rnn_layers'] as num?)?.toInt() ?? _predLayers;
       _djIn = _decoderJointInputNames(meta); // throws on a malformed artifact
       final djOnnx = (meta['decoder_joint_onnx'] as String?) ?? 'decoder_joint.onnx';
       _decoderJointSession =
           TranscriberOnnxConfig().createSession(await Utils.loadBytes('$modelDirectory/$djOnnx'));
+      dev.Timeline.finishSync();
       return Result.ok(null);
     } catch (e) {
       return Result.error(
@@ -428,6 +440,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
   @override
   List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
       {required bool withConfidence}) {
+    dev.Timeline.startSync('rnnt.decode_from_encoder');
     // RNN-T slices the encoder output per frame, so read it into a Dart list.
     // encoder_out: [1, D, T_enc]; batch is always 1 on-device -> encVal[0] is [D][T_enc].
     final encVal = encOutputs[0]?.value as List;
@@ -438,7 +451,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
       encLen = ((encOutputs[1]!.value as List)[0] as num).toInt();
     }
     if (encLen > tEnc) encLen = tEnc;
-
+    dev.Timeline.finishSync();
     return _decode(encChannels, encChannels.length, encLen,
         withConfidence: withConfidence);
   }
@@ -454,6 +467,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
     int encLen, {
     bool withConfidence = false,
   }) {
+    dev.Timeline.startSync('rnnt.decode');
     final hyp = <_Token>[];
     final stateLen = _predLayers * _predHidden; // [layers, 1, hidden]
     final stateShape = [_predLayers, 1, _predHidden];
@@ -537,7 +551,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
       h.release();
       c.release();
     }
-
+    dev.Timeline.finishSync();
     return hyp;
   }
 
