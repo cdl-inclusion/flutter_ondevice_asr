@@ -1,15 +1,7 @@
 #!/bin/bash
 # Build FastConformer on-device assets (hybrid super-encoder) for the Flutter bundle.
 #
-# Runs the LOCAL, no-Modal conversion
-# (conversion_tooling/fastconformer/convert_fastconformer_to_onnx_local.py) and writes the
-# hybrid artifact DIRECTLY into assets/transcribers/fastconformer/ — both hybrid/ (fp32) and
-# hybrid_int8/ (int8). No temp dir / copy step. (Add --validate to the converter call below
-# to also parity-check the graphs vs NeMo.)
-#
-# Needs the FastConformer conversion venv (heavy NeMo stack; Python 3.11 on macOS — see
-# conversion_tooling/fastconformer/requirements.txt). For a no-local-deps
-# path, use conversion_tooling/fastconformer/convert_fastconformer_to_onnx_modal.py instead.
+# Converted artefacts written to assets/transcribers/fastconformer/ folder.
 #
 # Usage:
 #   ./build_fastconformer_assets.sh [model_id_or_local_nemo]
@@ -38,10 +30,10 @@ echo ""
 # Check the conversion venv (NeMo + torch + onnx; Python 3.11 recommended on macOS).
 if [ ! -d "$CONVERSION_DIR/venv" ]; then
     echo "❌ Error: conversion venv not found at $CONVERSION_DIR/venv"
-    echo "Create it (macOS: use Python 3.11 — see requirements.txt):"
-    echo "  cd conversion_tooling/fastconformer"
-    echo "  python3.11 -m venv venv && source venv/bin/activate"
-    echo "  pip install -r requirements.txt"
+    echo "To create it:"
+    echo "  cd conversion_tooling"
+    echo "  python3.11 -m venv fastconformer/venv && source fastconformer/venv/bin/activate"
+    echo "  pip install -e '.[fastconformer]'"
     exit 1
 fi
 # Call the venv's interpreter DIRECTLY (robust — no `source activate` needed, so it works
@@ -68,9 +60,9 @@ fi
 echo "======================================================================="
 echo "Converting (fp32 + int8) directly into assets"
 echo "======================================================================="
-"$PY" "$CONVERSION_DIR/convert_fastconformer.py" \
+(cd "$PROJECT_ROOT" && "$PY" -m conversion_tooling.fastconformer.convert_fastconformer \
     --model "$MODEL" \
-    --out "$ASSETS_DIR"
+    --out "$ASSETS_DIR")
 
 echo ""
 echo "======================================================================="

@@ -3,12 +3,14 @@
 
 Needs NeMo + torch + onnx/onnxruntime installed locally.
 
+Run as a module from the repo root so the conversion_tooling package resolves:
+
     # base HF checkpoint
-    python convert_fastconformer_to_onnx_local.py \\
+    python -m conversion_tooling.fastconformer.convert_fastconformer \\
         --model nvidia/stt_en_fastconformer_hybrid_large_pc --out /tmp/fc_local
 
-    # a LOCAL adapted checkpoint (.nemo file, or a dir containing one) + validate
-    python convert_fastconformer_to_onnx_local.py \\
+    # a local/adapted checkpoint (.nemo file, or a dir containing one) + validate
+    python -m conversion_tooling.fastconformer.convert_fastconformer \\
         --model /path/to/best_model/model.nemo --out /tmp/fc_local --validate
 
 Writes <out>/hybrid/ (fp32) and <out>/hybrid_int8/ (int8).
@@ -55,7 +57,7 @@ def main() -> int:
     import logging
     logging.getLogger("nemo_logger").setLevel(logging.ERROR)
     from nemo.collections.asr.models import ASRModel
-    from convert_fastconformer_to_onnx_lib import convert, quantize
+    from .convert_fastconformer_to_onnx_lib import convert, quantize
 
     loader, arg, label = _resolve_source(args.model)
     print(f"[LOAD] ({'HF' if loader == 'hf' else 'local .nemo'}) {label}", flush=True)
@@ -72,7 +74,7 @@ def main() -> int:
 
     validation = validation_int8 = None
     if args.validate:
-        from convert_fastconformer_validation import validate_hybrid
+        from .convert_fastconformer_validation import validate_hybrid
         print("[VALIDATE] fp32 vs NeMo:", flush=True)
         validation = validate_hybrid(model, fp32)
 
@@ -84,7 +86,7 @@ def main() -> int:
         print(f"[WARN] int8 quantization failed ({e}); fp32 only.")
 
     if args.validate and int8_ok:
-        from convert_fastconformer_validation import validate_hybrid
+        from .convert_fastconformer_validation import validate_hybrid
         print("[VALIDATE] int8 vs NeMo (lossy — larger deltas expected):", flush=True)
         validation_int8 = validate_hybrid(model, int8)
 
@@ -95,12 +97,12 @@ def main() -> int:
 
     passed = True
     if validation is not None:
-        from convert_fastconformer_validation import print_validation_cases
+        from .convert_fastconformer_validation import print_validation_cases
         passed = validation["passed"]
         print(f"\nValidation vs NeMo (fp32): {'PASS' if passed else 'FAIL'}")
         print_validation_cases(validation["cases"])
     if validation_int8 is not None:
-        from convert_fastconformer_validation import print_validation_cases
+        from .convert_fastconformer_validation import print_validation_cases
         print(f"\nValidation vs NeMo (int8, lossy — larger deltas expected): "
               f"{'PASS' if validation_int8['passed'] else 'FAIL'}")
         print_validation_cases(validation_int8["cases"])

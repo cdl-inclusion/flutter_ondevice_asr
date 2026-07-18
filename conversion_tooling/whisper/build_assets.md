@@ -81,9 +81,9 @@ flutter_onnx_whisper/
 cd conversion_tooling
 
 # Create virtual environment (one time)
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
+python -m venv whisper/venv
+source whisper/venv/bin/activate  # or `whisper\venv\Scripts\activate` on Windows
+pip install -e ".[whisper]"
 ```
 
 ### Build Assets
@@ -236,98 +236,6 @@ Same size, but:
 - ✅ Faster (~10-15% improvement)
 - ✅ No marshalling overhead
 - ✅ Cleaner code
-
-## CI/CD Integration
-
-Add to your CI pipeline:
-
-```yaml
-# .github/workflows/build-assets.yml
-name: Build Assets
-
-on:
-  push:
-    paths:
-      - 'conversion_tooling/**'
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          cd conversion_tooling
-          python -m venv venv
-          source venv/bin/activate
-          pip install -r requirements.txt
-
-      - name: Build assets
-        run: |
-          cd conversion_tooling
-          ./build_assets.sh
-
-      - name: Test
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.x'
-      - run: flutter test
-
-      - name: Upload assets
-        uses: actions/upload-artifact@v3
-        with:
-          name: flutter-assets
-          path: assets/models/
-```
-
-## Troubleshooting
-
-### Error: Virtual environment not found
-```bash
-cd conversion_tooling
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Error: HuggingFace download fails
-Check your internet connection or try with a different model:
-```bash
-./build_assets.sh openai/whisper-tiny  # Retry
-```
-
-### Error: Out of disk space
-The build process requires ~2GB temporarily:
-- HuggingFace model download: ~660MB
-- ONNX export: ~660MB
-- Preprocessor: 66KB
-- Final assets: ~220MB per variant
-
-### Assets not found in tests
-Make sure you ran `build_assets.sh` and assets exist:
-```bash
-ls assets/models/whisper_tiny/default_int8/super_encoder.onnx
-```
-
-## Advanced Usage
-
-### Build Only One Variant
-
-Edit `build_assets.sh` and comment out variants you don't need:
-
-```bash
-# Build all three variants
-build_variant "default"
-build_variant "default_int8"
-# build_variant "default_int8_optimum"  # Skip this one
-```
 
 ### Custom Opset/IR Versions
 

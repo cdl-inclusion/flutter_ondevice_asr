@@ -33,8 +33,11 @@ echo ""
 
 # Check virtual environment
 if [ ! -d "$CONVERSION_DIR/venv" ]; then
-    echo "❌ Error: Virtual environment not found."
-    echo "Run: cd conversion_tooling && python -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+    echo "❌ Error: conversion venv not found at $CONVERSION_DIR/venv"
+    echo "To create it:"
+    echo "  cd conversion_tooling"
+    echo "  python3.11 -m venv whisper/venv && source whisper/venv/bin/activate"
+    echo "  pip install -e '.[whisper]'"
     exit 1
 fi
 
@@ -50,10 +53,9 @@ echo "======================================================================="
 echo "Running Whisper conversion pipeline"
 echo "======================================================================="
 echo ""
-
-python "$CONVERSION_DIR/convert_whisper_to_onnx.py" \
+(cd "$PROJECT_ROOT" && python -m conversion_tooling.whisper.convert_whisper_to_onnx \
     "$MODEL_ID" \
-    "$MODELS_DIR/whisper_tiny"
+    "$MODELS_DIR/whisper_tiny")
 
 echo ""
 echo "✓ Conversion pipeline completed!"

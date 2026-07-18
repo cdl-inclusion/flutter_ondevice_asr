@@ -30,8 +30,7 @@ flutter_ondevice_asr/
 │   └── fastconformer/                        # the conversion tooling (self-contained, CPU)
 │       ├── convert_fastconformer_to_onnx_lib.py    # convert() + quantize() — all the logic
 │       ├── convert_fastconformer_validation.py     # validate_hybrid() vs NeMo (synthetic)
-│       ├── convert_fastconformer.py                # local runner (this is what the script calls)
-│       └── requirements.txt                        # local pip deps (NeMo stack)
+│       └── convert_fastconformer.py                # local runner (this is what the script calls)
 └── assets/transcribers/fastconformer/
     └── hybrid_int8/                          # bundled on-device asset (~149 MB)
         ├── super_encoder.onnx  ctc_decoder.onnx  decoder_joint.onnx  tokens.txt  meta.json
@@ -41,10 +40,10 @@ flutter_ondevice_asr/
 
 ```bash
 # 1) one-time: create the conversion venv (macOS: successfully tested Python 3.11, other python versions have been problematic with deps)
-cd conversion_tooling/fastconformer
-python3.11 -m venv venv && source venv/bin/activate
-pip install -r requirements_conversion_local.txt
-cd ../..
+cd conversion_tooling
+python3.11 -m venv fastconformer/venv && source fastconformer/venv/bin/activate
+pip install -e ".[fastconformer]"
+cd ..
 
 # 2) build + bundle (base EN by default, for testing here)
 ./build_fastconformer_assets.sh
@@ -57,18 +56,8 @@ This writes `assets/transcribers/fastconformer/hybrid_int8/` — the asset the D
 app use.
 
 ## What the build script does
-Runs `convert_fastconformer.py --model <M> --out assets/transcribers/fastconformer/ --validate`:
+Runs `python -m conversion_tooling.fastconformer.convert_fastconformer --model <M> --out assets/transcribers/fastconformer/` (from the repo root; add `--validate` in the script for parity checks):
 * loads the checkpoint on CPU, exports the hybrid artifact (fp32 → `hybrid/`)
 * int8-quantizes it (→ `hybrid_int8/`)
 * validates both vs original NeMo checkpoint (parity check on synthetic data).
-
-## No local NeMo? Use Modal (identical output)
-The heavy NeMo stack can be painful to install locally. The Modal runner does the same
-conversion in a clean container (CPU-only, deps handled in-image):
-```bash
-cd conversion_tooling/fastconformer
-python convert_fastconformer_to_onnx_modal.py --model nvidia/stt_en_fastconformer_hybrid_large_pc \
-    --validate --out /tmp/fc
-# then copy /tmp/fc/hybrid_int8/* into assets/transcribers/fastconformer/hybrid_int8/
-```
 

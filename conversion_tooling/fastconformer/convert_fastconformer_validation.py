@@ -8,20 +8,12 @@ even where its real-data WER is fine.
 
 from __future__ import annotations
 
-import os
-import sys
-
 _ENC_PARITY_THRESHOLD = 1e-2  # max|Δ| on encoder activations (mirrors the CTC logprob bar)
 
 
 def _import_token_helpers():
-    """Import the runtime detok/greedy helpers from onnx_fastconformer_transcriber (one dir
-    up in conversion_tooling/ locally."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    for p in (os.path.dirname(here), here, "/root"):
-        if os.path.isdir(p) and p not in sys.path:
-            sys.path.insert(0, p)
-    from onnx_fastconformer_transcriber import _load_tokens, _detok, ctc_greedy_decode
+    """Import the runtime detok/greedy helpers (lazy to keeps onnxruntime out of module import)."""
+    from ..onnx_fastconformer_transcriber import _load_tokens, _detok, ctc_greedy_decode
     return _load_tokens, _detok, ctc_greedy_decode
 
 

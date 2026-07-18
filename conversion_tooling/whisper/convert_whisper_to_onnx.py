@@ -11,9 +11,9 @@
 # - HuggingFace model ID (e.g., "openai/whisper-tiny", "openai/whisper-base")
 # - Local path to a fine-tuned Whisper model (after HF model has been saved locally)
 #
-# Example usage:
-#   python convert_whisper_to_onnx.py "openai/whisper-tiny" /tmp/onnx_tiny
-#   python convert_whisper_to_onnx.py "./my-finetuned-whisper" /tmp/onnx_tiny
+# Example usage (run from the repo root so the conversion_tooling package resolves):
+#   python -m conversion_tooling.whisper.convert_whisper_to_onnx "openai/whisper-tiny" /tmp/onnx_tiny
+#   python -m conversion_tooling.whisper.convert_whisper_to_onnx "./my-finetuned-whisper" /tmp/onnx_tiny
 
 
 from optimum.onnxruntime import ORTModelForSpeechSeq2Seq, ORTQuantizer
@@ -26,21 +26,19 @@ from pathlib import Path
 
 from transformers import WhisperProcessor, WhisperTokenizer
 import os, shutil
-import sys
 import json
 import time
 import argparse
 import shutil
 import onnx
 from onnx import compose
-from whisper_preprocessor import WhisperPreprocessor80
+from .whisper_preprocessor import WhisperPreprocessor80
 
 # ONNX IR version, shared with other converters so the app's single
-# bundled ONNX Runtime loads both. Lives one dir up in conversion_tooling/.
+# bundled ONNX Runtime loads both.
 # (Opset version is enforced separately: Optimum defaults to it and whisper_preprocessor
 # hardcodes onnxscript.opset18 — see onnx_conversion_constants.ONNX_OPSET.)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from onnx_conversion_constants import ONNX_IR_VERSION as IR_VERSION
+from ..onnx_conversion_constants import ONNX_IR_VERSION as IR_VERSION
 
 
 def convert_to_onnx(original_model_path, default_onnx_folder):

@@ -15,16 +15,13 @@ names instead of hardcoding them.
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import sys
 from pathlib import Path
 
 import numpy as np
 
 # Shared opset/IR constants.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from onnx_conversion_constants import ONNX_IR_VERSION, ONNX_OPSET
+from ..onnx_conversion_constants import ONNX_IR_VERSION, ONNX_OPSET
 
 def _preprocessor_meta(model) -> dict:
     """Subset of cfg.preprocessor recorded in meta.json (provenance + the window stride

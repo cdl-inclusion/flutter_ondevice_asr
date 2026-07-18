@@ -10,9 +10,6 @@ Uses the onnx-asr preprocessor implementation.
 TODO mention licencse and attribution for onnx-asr code
 """
 
-import os
-import sys
-
 import numpy as np
 import torchaudio
 from onnxscript import DOUBLE, FLOAT, INT64, script
@@ -24,8 +21,7 @@ from onnxscript import DOUBLE, FLOAT, INT64, script
 # silent drift instead: if the shared constant changes, bump the import below to match.
 from onnxscript import opset18 as op
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from onnx_conversion_constants import ONNX_OPSET
+from ..onnx_conversion_constants import ONNX_OPSET
 
 assert op.version == ONNX_OPSET, (
     f"whisper_preprocessor imports onnxscript.opset{op.version}, but "
