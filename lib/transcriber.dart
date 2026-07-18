@@ -30,20 +30,20 @@ abstract class Transcriber {
   });
 
   Future<Result<TranscriptionResult>> transcribe(
-      Float32List audio, {
-        bool segmentEnd = true,
-        bool getWordDetails = false,
-        bool getSegmentDetails = false,
-        int? maxOutputTokens,
-      });
+    Float32List audio, {
+    bool segmentEnd = true,
+    bool getWordDetails = false,
+    bool getSegmentDetails = false,
+    int? maxOutputTokens,
+  });
 
   Future<Result<TranscriptionResult>> transcribeFile(
-      String path, {
-        bool segmentEnd = true,
-        bool getWordDetails = false,
-        bool getSegmentDetails = false,
-        int? maxOutputTokens,
-      });
+    String path, {
+    bool segmentEnd = true,
+    bool getWordDetails = false,
+    bool getSegmentDetails = false,
+    int? maxOutputTokens,
+  });
 
   void dispose();
 }

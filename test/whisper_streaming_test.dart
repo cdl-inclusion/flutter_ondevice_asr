@@ -10,7 +10,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   final testAudioFile = toAbsolutePath('assets/audio/jfk_asknot.wav');
-  final modelDirectory = toAbsolutePath('assets/transcribers/whisper/models/whisper_tiny/default_int8');
+  final modelDirectory = toAbsolutePath(
+    'assets/transcribers/whisper/models/whisper_tiny/default_int8',
+  );
 
   debugPrint('Unit test paths (absolute, filesystem-based):');
   debugPrint('  modelDirectory: $modelDirectory');
@@ -23,7 +25,10 @@ void main() {
   test('streaming with partials enabled and disabled', () async {
     // Load model once
     final whisper = Transcriber.getInstance(TranscriberType.whisper);
-    await whisper.loadModel(modelDirectory: modelDirectory, languageCode: language);
+    await whisper.loadModel(
+      modelDirectory: modelDirectory,
+      languageCode: language,
+    );
 
     // Create streaming instance once with all parameters
     final streaming = await StreamingTranscriber.create(
@@ -69,9 +74,7 @@ void main() {
 
     // Test scenario 2: Partials disabled
     debugPrint('\n=== Test 2: Finals Only ===');
-    streaming.configure(
-      enablePartials: false,
-    );
+    streaming.configure(enablePartials: false);
     streaming.reset();
 
     partials = <TranscriptionResult>[];

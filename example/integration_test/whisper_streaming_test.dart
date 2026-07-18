@@ -12,10 +12,13 @@ import 'package:path_provider/path_provider.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  const testAudioFile = 'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
-  const expectedTranscript = 'And so my fellow Americans ask not what you are country can do for you. Ask what you can do for your country.';
+  const testAudioFile =
+      'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
+  const expectedTranscript =
+      'And so my fellow Americans ask not what you are country can do for you. Ask what you can do for your country.';
 
-  const modelDirectory = 'assets/transcribers/whisper/models/whisper_tiny/default_int8';
+  const modelDirectory =
+      'assets/transcribers/whisper/models/whisper_tiny/default_int8';
   const String language = 'en';
 
   // Streaming configuration
@@ -64,7 +67,9 @@ void main() {
     final tempAudioFile = File('${tempDir.path}/test_audio.wav');
     await tempAudioFile.writeAsBytes(audioAsset.buffer.asUint8List());
 
-    final testAudioFloat32List = await Audio.instance.loadAudio(tempAudioFile.path);
+    final testAudioFloat32List = await Audio.instance.loadAudio(
+      tempAudioFile.path,
+    );
     logStep('Audio file prepared and loaded');
 
     // 5. Collect transcription results
@@ -83,11 +88,15 @@ void main() {
 
       if (result.isFinal) {
         finalCount++;
-        print('\n[SEGMENT #$finalCount] FINAL (${result.durationInSeconds.toStringAsFixed(2)}s): "${result.text}"');
+        print(
+          '\n[SEGMENT #$finalCount] FINAL (${result.durationInSeconds.toStringAsFixed(2)}s): "${result.text}"',
+        );
         finalResults.add(result);
       } else {
         partialCount++;
-        print('[PARTIAL #$partialCount] (${result.durationInSeconds.toStringAsFixed(2)}s): "${result.text}"');
+        print(
+          '[PARTIAL #$partialCount] (${result.durationInSeconds.toStringAsFixed(2)}s): "${result.text}"',
+        );
         partialResults.add(result);
       }
     });
@@ -134,14 +143,18 @@ void main() {
     print('Total partials: ${partialResults.length}');
     print('Total segments: ${finalResults.length}');
     if (firstResultTime != null && lastResultTime != null) {
-      final streamingDuration = lastResultTime!.difference(firstResultTime!).inMilliseconds;
+      final streamingDuration = lastResultTime!
+          .difference(firstResultTime!)
+          .inMilliseconds;
       print('Streaming duration: ${streamingDuration}ms');
     }
 
     print('\n--- Segment Details ---');
     for (int i = 0; i < finalResults.length; i++) {
       final segment = finalResults[i];
-      print('Segment ${i + 1}: ${segment.durationInSeconds.toStringAsFixed(2)}s - "${segment.text}"');
+      print(
+        'Segment ${i + 1}: ${segment.durationInSeconds.toStringAsFixed(2)}s - "${segment.text}"',
+      );
     }
 
     // Combine all final transcriptions
@@ -152,26 +165,46 @@ void main() {
     print('===================================');
 
     // Check that we got at least some results
-    expect(partialResults.length + finalResults.length, greaterThan(0),
-        reason: 'Should have received at least some transcription results');
+    expect(
+      partialResults.length + finalResults.length,
+      greaterThan(0),
+      reason: 'Should have received at least some transcription results',
+    );
 
     // IMPORTANT: Check that partial results were actually generated during streaming
     // If this fails, VAD might not be triggering or minPartialDuration might be too long
-    expect(partialResults.length, greaterThan(0),
-        reason: 'Should have received partial transcriptions during streaming (not just final from flush)');
+    expect(
+      partialResults.length,
+      greaterThan(0),
+      reason:
+          'Should have received partial transcriptions during streaming (not just final from flush)',
+    );
 
     // Check that we got at least one final result
-    expect(finalResults.length, greaterThan(0),
-        reason: 'Should have received at least one final transcription');
+    expect(
+      finalResults.length,
+      greaterThan(0),
+      reason: 'Should have received at least one final transcription',
+    );
 
     // Verify that results came progressively during streaming, not all at the end
     // The first result should come well before flush was called
     if (firstResultTime != null) {
-      final timeUntilFirstResult = firstResultTime!.difference(streamingStartTime).inMilliseconds;
-      final timeUntilFlush = flushTime.difference(streamingStartTime).inMilliseconds;
-      print('Time until first result: ${timeUntilFirstResult}ms, time until flush: ${timeUntilFlush}ms');
-      expect(timeUntilFirstResult, lessThan(timeUntilFlush),
-          reason: 'First result should arrive during streaming, not just after flush');
+      final timeUntilFirstResult = firstResultTime!
+          .difference(streamingStartTime)
+          .inMilliseconds;
+      final timeUntilFlush = flushTime
+          .difference(streamingStartTime)
+          .inMilliseconds;
+      print(
+        'Time until first result: ${timeUntilFirstResult}ms, time until flush: ${timeUntilFlush}ms',
+      );
+      expect(
+        timeUntilFirstResult,
+        lessThan(timeUntilFlush),
+        reason:
+            'First result should arrive during streaming, not just after flush',
+      );
     }
 
     // Verify the combined transcript matches expected (with some flexibility)
@@ -180,15 +213,21 @@ void main() {
     final transcriptLower = fullTranscript.toLowerCase();
     final expectedLower = expectedTranscript.toLowerCase();
 
-    final matchesExpected = transcriptLower.contains(expectedLower) ||
+    final matchesExpected =
+        transcriptLower.contains(expectedLower) ||
         expectedLower.contains(transcriptLower) ||
         fullTranscript == expectedTranscript;
 
-    expect(matchesExpected, isTrue,
-        reason: 'Transcript should match expected (actual: "$fullTranscript", expected: "$expectedTranscript")');
+    expect(
+      matchesExpected,
+      isTrue,
+      reason:
+          'Transcript should match expected (actual: "$fullTranscript", expected: "$expectedTranscript")',
+    );
 
-    print('[${DateTime.now()}] TEST PASSED - Total duration: ${totalSw.elapsed.inSeconds}s');
+    print(
+      '[${DateTime.now()}] TEST PASSED - Total duration: ${totalSw.elapsed.inSeconds}s',
+    );
     print('====================================');
   });
-
 }

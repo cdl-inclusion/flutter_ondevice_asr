@@ -33,9 +33,9 @@ class StreamingTranscriber {
   bool _isRecordingSpeech = false;
   int _chunkCounter = 0;
   double _bufferDurationSeconds =
-  0.0; // Total duration in buffer since VAD start
+      0.0; // Total duration in buffer since VAD start
   double _newAudioDurationSeconds =
-  0.0; // Duration of new audio since last partial transcription
+      0.0; // Duration of new audio since last partial transcription
   late final double _vadChunkDurationSeconds;
   bool _transcriptionInProgress = false;
   bool _bufferContainsSpeech = false;
@@ -48,11 +48,11 @@ class StreamingTranscriber {
     required double vadThreshold,
     required int eosMinSilence,
   }) : _transcriber = transcriber,
-        _sampleRate = sampleRate,
-        _vadThreshold = vadThreshold,
-        _eosMinSilence = eosMinSilence {
+       _sampleRate = sampleRate,
+       _vadThreshold = vadThreshold,
+       _eosMinSilence = eosMinSilence {
     _transcriptionController =
-    StreamController<TranscriptionResult>.broadcast();
+        StreamController<TranscriptionResult>.broadcast();
   }
 
   /// Create and initialize a new StreamingTranscriber instance
@@ -255,10 +255,10 @@ class StreamingTranscriber {
 
   /// Helper method to run transcription asynchronously without blocking audio processing
   Future<void> _transcribeAsync(
-      Float32List audio,
-      double duration, {
-        required bool isFinal,
-      }) async {
+    Float32List audio,
+    double duration, {
+    required bool isFinal,
+  }) async {
     try {
       final result = await _transcriber.transcribe(
         audio,
@@ -315,9 +315,9 @@ class StreamingTranscriber {
   }
 
   void _transcribeCurrentSpeechBuffer(
-      double bufferDuration,
-      bool processingPartials,
-      ) {
+    double bufferDuration,
+    bool processingPartials,
+  ) {
     if (_speechBuffer.length > 0 && !_transcriptionInProgress) {
       // Copy buffer for async transcription
       final audioToTranscribe = _speechBuffer.toFloat32List();
@@ -328,7 +328,7 @@ class StreamingTranscriber {
         _speechBuffer.clear();
         _bufferDurationSeconds = 0.0;
         _bufferContainsSpeech =
-        false; // Buffer cleared, no more untranscribed speech
+            false; // Buffer cleared, no more untranscribed speech
       }
       _newAudioDurationSeconds = 0.0;
 

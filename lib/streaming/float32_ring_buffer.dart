@@ -9,7 +9,7 @@ class Float32RingBuffer {
   int _length = 0;
 
   Float32RingBuffer([int initialCapacity = 1024])
-      : _data = Float32List(initialCapacity < 1 ? 1 : initialCapacity);
+    : _data = Float32List(initialCapacity < 1 ? 1 : initialCapacity);
 
   int get length => _length;
 
@@ -36,7 +36,9 @@ class Float32RingBuffer {
   /// Caller must check length >= count first.
   Float32List consume(int count) {
     if (count > _length) {
-      throw StateError('Cannot consume $count samples, only $_length available');
+      throw StateError(
+        'Cannot consume $count samples, only $_length available',
+      );
     }
 
     final out = Float32List(count);
