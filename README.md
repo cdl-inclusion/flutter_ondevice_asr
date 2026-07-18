@@ -28,6 +28,7 @@ This library uses a **model-agnostic architecture** that separates transcription
 
 **Model Implementations:**
 - `WhisperTranscriber`: Whisper model implementation in `lib/models/whisper/` (implements `Transcriber`)
+- `FastConformerTranscriber`: interface for Nvidia FastConformer model, with `FastConformerCtcTranscriber` and `FastConformerRnntTranscriber` being two respective implementations.
 - Additional models can be added by implementing the `Transcriber` interface
 
 **Shared Components (used by all models):**
@@ -37,6 +38,7 @@ This library uses a **model-agnostic architecture** that separates transcription
 
 **Assets:**
 - `assets/transcribers/whisper/models/`: Whisper ONNX model files (super_encoder, decoders, configs, vocab)
+- `assets/transcriber/fastconformer`: FastConformer ONNX model files (super_encoder, CTC head and RNN-T decoder, vocab)
 - `assets/vad/silero_vad/`: Voice activity detection model
 
 ## Details on Whisper Implementation
@@ -81,6 +83,32 @@ This will first download the multilingual Whisper tiny model from HuggingFace, c
 
 We create both an unquantized as well as the int8 qunatized version. For usage on phones, unless quality impacts are too significant, it is highly recommended to use the int8 version.
 
+## Details on FastConformer Implementation
+
+The FastConformer implementation supports Nvidia NeMo hybrid FastConformer models, where a CTC head and an RNN-T head share one encoder. It follows the same design principles as the Whisper implementation (see above), so only the differences are described here.
+
+### Tokenization
+
+* Uses `FastConformerTokenizer` (`lib/models/fastconformer/fastconformer_tokenizer.dart`), a self-contained detokenizer for NeMo's SentencePiece BPE vocabulary (`tokens.txt`).
+* FastConformer models are monolingual per checkpoint — the language is fixed by the loaded model, there is no language token.
+
+### Super-Encoder
+
+As with Whisper, the mel-spectrogram preprocessing is merged with the encoder into a single `super_encoder.onnx` that takes raw waveforms directly (same benefits as described in the Whisper section: performance, preprocessing/training parity, simpler code). The super-encoder is shared between both decoding heads.
+
+### Decoding Heads
+
+Unlike Whisper's autoregressive decoder, the hybrid model offers two heads on top of the shared encoder output, implemented as `FastConformerCtcTranscriber` and `FastConformerRnntTranscriber` (both extending a common base that owns the shared encoder, detokenization, word grouping and confidence scoring):
+
+* **CTC** (`ctc_decoder.onnx`): non-autoregressive — a single pass over the encoder output. Fastest option, no KV-cache needed.
+* **RNN-T** (`decoder_joint.onnx`): fused prediction network + joint network, run greedily one step at a time. Typically slightly better quality at higher decoding cost.
+
+Both heads provide per-token log-probs and encoder frame indices, which are used for word-level confidence scores and timestamps.
+
+### Asset Generation
+
+Analogous to Whisper, all assets are generated with `conversion_tooling/fastconformer/` (see `build_assets.md` there for details): the NeMo checkpoint is exported to ONNX as one shared super-encoder plus the two head graphs, in both fp32 and int8 variants, and validated against the original NeMo model. As with Whisper, the int8 version is recommended on phones.
+
 ## Configuration
 
 
@@ -121,6 +149,8 @@ How to set them will depend both on the speaker (wrt to the VAD setting) as well
 - `whisper_tokenizer_test.dart`: Tokenizer encoding/decoding
 - `whisper_test.dart`: Whisper transcriber functionality
 - `whisper_streaming_test.dart`: Streaming transcriber functionality
+
+and similarly for the FastConformer models.
 
 Run with: `flutter test`
 
@@ -166,11 +196,11 @@ Future work: Extend measurements to corpus with varying audio lengths.
 
 ### Generate assets
 
-The library requires Whisper model files and tokenizer vocabularies. You need to generate them with the `conversion_tooling/`.
+The library requires Whisper or FastConformer model files and tokenizer vocabularies. You need to generate them with the `conversion_tooling/`.
 
-Create a python environment and the required dependencies:
+Create a python environment in the respective subdirectory (Whisper and FastConformer have different dependencies an it is best to create different environments):
 ```
-cd conversion_tooling
+cd conversion_tooling/whisper
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements
@@ -179,8 +209,9 @@ pip install -r requirements
 Then run the asset generation script
 ```
 cd ..
-./build_assets.sh
+./build_whisper_assets.sh
 ```
+
 
 
 This script runs through these steps:
@@ -190,6 +221,7 @@ This script runs through these steps:
 3. Merges preprocessor + encoder into super-encoder using `merge_preprocessor_encoder.py`
 4. Outputs to `assets/transcribers/whisper/models/{default,default_int8,default_int8_optimum}/`
 
+For FastConformer, analoguously create a separate environment, install the dependencies and run `build_fastconformer_assets.sh`.
 
 ### Running Unit Tests
 
