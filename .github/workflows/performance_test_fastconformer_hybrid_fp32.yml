@@ -63,7 +63,7 @@ jobs:
         run: |
           mkdir -p assets/transcribers/fastconformer/hybrid
           gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_FP32_ZIP_BUCKET_PATH }} .
-          unzip fastconformer_hybrid_int8.zip -d assets/transcribers/fastconformer/hybrid
+          unzip fastconformer_hybrid_fp32.zip -d assets/transcribers/fastconformer/hybrid
           sed -i '' "s|hybrid_int8|hybrid|g" example/integration_test/fastconformer_firebase_performance_test.dart
 
       #6 Building APK
