@@ -29,7 +29,6 @@ flutter_onnx_whisper/
 │   ├── whisper_tiny/                    # Created during build, then deleted
 │   │   ├── default/
 │   │   ├── default_int8/
-│   │   └── default_int8_optimum/
 │   └── preprocessor/
 │       └── whisper_preprocessor_80.onnx
 │

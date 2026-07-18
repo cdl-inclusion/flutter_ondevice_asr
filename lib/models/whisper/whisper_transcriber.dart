@@ -7,6 +7,7 @@ import 'package:flutter_ondevice_asr/util/utils.dart';
 import 'package:logging/logging.dart';
 import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 
+import '../../common/audio_constants.dart';
 import '../../common/result.dart';
 import '../../transcriber.dart';
 import '../../model/onnx_config.dart';
@@ -43,10 +44,10 @@ class WhisperTranscriber implements Transcriber {
   Future<Result<void>> loadModel({
     required String modelDirectory,
     required String languageCode,
-    double tokensPerSecond = defaultTokensPerSecond,
+    double? tokensPerSecond,
   }) async {
     final loadModelTimelineTask = dev.TimelineTask()..start('load_whisper_model');
-    _tokensPerSecond = tokensPerSecond;
+    _tokensPerSecond = tokensPerSecond ?? defaultTokensPerSecond;
     _modelPath = modelDirectory;
 
     final vocabFutureResult = _loadVocab(modelPath: modelDirectory);
@@ -105,7 +106,7 @@ class WhisperTranscriber implements Transcriber {
     dev.Timeline.finishSync();
     final audioFeaturesTensor = encoded?[1] as OrtValueTensor;
 
-    final audioDuration = audio.length / 16000.0;
+    final audioDuration = audio.length / kSampleRate;
     final effectiveMaxTokens =
         maxOutputTokens ??
         (audioDuration * _tokensPerSecond).ceil().clamp(10, 224);
@@ -151,7 +152,7 @@ class WhisperTranscriber implements Transcriber {
       }
     }
 
-    final duration = audio.length / 16000.0; // Assuming 16kHz sample rate
+    final duration = audio.length / kSampleRate;
 
     return Result.ok(
       TranscriptionResult(

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../common/result.dart';
 import 'model/transcription_result.dart';
+import 'models/fastconformer/fastconformer_transcriber.dart';
 import 'models/whisper/whisper_transcriber.dart';
 import 'transcriber_type.dart';
 
@@ -10,6 +11,10 @@ abstract class Transcriber {
     switch (type) {
       case TranscriberType.whisper:
         return WhisperTranscriber();
+      case TranscriberType.fastConformer:
+        return FastConformerCtcTranscriber();
+      case TranscriberType.fastConformerRnnt:
+        return FastConformerRnntTranscriber();
     }
   }
 
@@ -18,7 +23,10 @@ abstract class Transcriber {
   Future<Result<void>> loadModel({
     required String modelDirectory,
     required String languageCode,
-    double tokensPerSecond,
+    // Optional decoding-budget hint (tokens per second of audio). Only used by
+    // free-running autoregressive decoders (Whisper) to cap generation. Non-
+    // autoregressive / frame-synchronous backends (FastConformer CTC + RNN-T) ignore it.
+    double? tokensPerSecond,
   });
 
   Future<Result<TranscriptionResult>> transcribe(

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
+import '../common/audio_constants.dart';
 import '../common/result.dart';
 import '../model/onnx_config.dart';
 import '../model/transcription_result.dart';
@@ -84,7 +85,7 @@ class StreamingTranscriber {
     required Transcriber transcriber,
     double vadThreshold = 0.5,
     int eosMinSilence = 300,
-    int sampleRate = 16000,
+    int sampleRate = kSampleRate,
     bool enablePartials = true,
     int minPartialDuration = 500,
     int maxSegmentDuration = 30000,

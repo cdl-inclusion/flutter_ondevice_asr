@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print — integration-test progress logging; print is intentional.
+
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_ondevice_asr/model/transcription_result.dart';

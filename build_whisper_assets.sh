@@ -16,7 +16,7 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR"
-CONVERSION_DIR="$PROJECT_ROOT/conversion_tooling"
+CONVERSION_DIR="$PROJECT_ROOT/conversion_tooling/whisper"
 MODELS_DIR="$PROJECT_ROOT/models"  # Temporary build directory (gitignored)
 ASSETS_DIR="$PROJECT_ROOT/assets/transcribers/whisper/models"
 
@@ -91,22 +91,12 @@ copy_variant() {
     ls -lh "$target_dir" | grep -E "(super_encoder|decoder|config|vocab)" | awk '{print "      " $9 " (" $5 ")"}'
 }
 
-# Copy both variants
-copy_variant "default"
+# Only the int8 variant is fully built (super_encoder + vocab) and bundled in pubspec.yaml.
+# The fp32 "default" variant is intentionally left as raw Optimum output by the converter
+# (see convert_whisper_to_onnx.py run_conversion: super_encoder/vocab built for int8 only).
 copy_variant "default_int8"
 
 echo ""
 echo "======================================================================="
 echo "✓ All assets built successfully!"
 echo "======================================================================="
-echo ""
-echo "Summary:"
-echo "  - Exported models from: $MODEL_ID"
-echo "  - Created super_encoder.onnx for each variant (preprocessor + encoder merged)"
-echo "  - Copied decoders and configs to assets/"
-echo ""
-echo "Temporary files:"
-echo "  - Source models: $MODELS_DIR (can be deleted or kept for caching)"
-echo ""
-echo "Bundled assets (shipped with app):"
-echo "  - $ASSETS_DIR/"
