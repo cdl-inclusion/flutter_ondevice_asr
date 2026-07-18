@@ -34,3 +34,4 @@ flutter:
      - assets/vad/silero_vad/
      - assets/transcribers/whisper/models/whisper_tiny/default_int8/
      - assets/transcribers/fastconformer/hybrid_int8/
+     - assets/transcribers/fastconformer/hybrid/
