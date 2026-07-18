@@ -66,7 +66,7 @@ jobs:
           unzip whisper_tiny_int8.zip -d assets/transcribers/whisper/models/whisper_tiny
 
       #6 Building APK
-      - name: Build APK and trigger test on Pixel 8a and Galaxy Tab A9+
+      - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+
         timeout-minutes: 20
         env:
           CI: true
@@ -81,6 +81,8 @@ jobs:
             --device model=gta9pwifi,version=34,locale=en,orientation=portrait \
             --device model=akita,version=34,locale=en,orientation=portrait \
             --device model=bluejay,version=32,locale=en,orientation=portrait \
+            --device model=a36xq,version=35,locale=en,orientation=portrait \
+            --device model=stallion,version=36,locale=en,orientation=portrait \
             --timeout 15m \
             --directories-to-pull /sdcard/Documents
 
@@ -90,9 +92,13 @@ jobs:
           result_pixel8a="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
           result_tab9p="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
           result_pixel6a="${result}bluejay-32-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
+          result_pixel10a="${result}stallion-36-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
+          result_galaxy_a36="${result}a36xq-35-en-portrait/artifacts/sdcard/Documents/performance_trace.json"
           gcloud storage cp $result_pixel8a performance_trace_pixel_8a.json
           gcloud storage cp $result_tab9p performance_trace_galaxy_tab_9p.json
           gcloud storage cp $result_pixel6a performance_trace_pixel_6a.json
+          gcloud storage cp $result_pixel10a performance_trace_pixel_10a.json
+          gcloud storage cp $result_galaxy_a36 performance_trace_galaxy_a36.json
 
       - name : Upload performance traces to workflow artifacts
         uses: 'actions/upload-artifact@v7'
@@ -102,3 +108,5 @@ jobs:
             performance_trace_pixel_8a.json
             performance_trace_galaxy_tab_9p.json
             performance_trace_pixel_6a.json
+            performance_trace_pixel_10a.json
+            performance_trace_galaxy_a36.json
