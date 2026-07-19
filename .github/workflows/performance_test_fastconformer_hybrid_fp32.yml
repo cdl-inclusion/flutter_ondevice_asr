@@ -64,7 +64,7 @@ jobs:
           sed -i "s|int8|fp32|g" example/integration_test/fastconformer_firebase_performance_test.dart
           mkdir -p assets/transcribers/fastconformer/fp32
           gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_FP32_ZIP_BUCKET_PATH }} .
-          unzip fastconformer_hybrid_fp32.zip -d assets/transcribers/fastconformer/fp32
+          unzip fastconformer_fp32.zip -d assets/transcribers/fastconformer/fp32
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+

@@ -61,15 +61,9 @@ jobs:
 
       - name: 'Download and setup whisper tiny model in project asset'
         run: |
-          mkdir -p assets/transcribers/whisper/models/whisper_tiny/
+          mkdir -p assets/transcribers/whisper/models/whisper_tiny/int8
           gcloud storage cp ${{ secrets.WHISPER_TINY_MODEL_ZIP_BUCKET_PATH }} .
-          unzip whisper_tiny_int8.zip -d assets/transcribers/whisper/models/whisper_tiny
-          # Variant dirs were renamed default_int8 -> int8; keep working with a
-          # bucket zip that still contains the old default_int8/ layout.
-          if [ -d assets/transcribers/whisper/models/whisper_tiny/default_int8 ]; then
-            mv assets/transcribers/whisper/models/whisper_tiny/default_int8 \
-               assets/transcribers/whisper/models/whisper_tiny/int8
-          fi
+          unzip whisper_tiny_int8.zip -d assets/transcribers/whisper/models/whisper_tiny/int8
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+

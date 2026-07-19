@@ -63,7 +63,7 @@ jobs:
         run: |
           mkdir -p assets/transcribers/fastconformer/int8
           gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_INT8_ZIP_BUCKET_PATH }} .
-          unzip fastconformer_hybrid_int8.zip -d assets/transcribers/fastconformer/int8
+          unzip fastconformer_int8.zip -d assets/transcribers/fastconformer/int8
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+
