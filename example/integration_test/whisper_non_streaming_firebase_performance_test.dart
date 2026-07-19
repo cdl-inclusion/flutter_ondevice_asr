@@ -15,15 +15,8 @@ void main() {
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
   const modelDirectory =
-      'assets/transcribers/whisper/models/whisper_tiny/default_int8';
+      'assets/transcribers/whisper/models/whisper_tiny/int8';
   const String language = 'en';
-
-  // Alternative test audio:
-  // const testAudioFile = 'packages/flutter_ondevice_asr/assets/audio/crisp_autumn.wav';
-  // const expectedTranscript = 'crisp autumn leaves crunch underfoot';
-  // Alternative: use external model paths (not bundled):
-  // const modelDirectory = '/tmp/onnx_tiny/default';  // multilingual
-  // const modelDirectory = '/tmp/onnx_tiny_en/default';  // English-only
 
   setUp(() {
     Logger.root.level = Level.ALL; // defaults to Level.INFO

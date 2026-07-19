@@ -14,7 +14,7 @@ void main() {
       'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
-  const modelDirectory = 'assets/transcribers/fastconformer/hybrid_int8';
+  const modelDirectory = 'assets/transcribers/fastconformer/int8';
   const String language = 'en';
 
   setUp(() {
