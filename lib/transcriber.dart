@@ -15,6 +15,8 @@ abstract class Transcriber {
         return FastConformerCtcTranscriber();
       case TranscriberType.fastConformerRnnt:
         return FastConformerRnntTranscriber();
+      case TranscriberType.fastConformerHybrid:
+        return FastConformerHybridTranscriber();
     }
   }
 
@@ -35,6 +37,9 @@ abstract class Transcriber {
     bool getWordDetails = false,
     bool getSegmentDetails = false,
     int? maxOutputTokens,
+    // Prefer the backend's fastest decoding path over more accurate one (might not be available for all backends).
+    // Eg, for hybrid FastConformer, this forces the CTC head even for final segments (otherwise partials -> CTC, finals -> RNN-T).
+    bool fastDecode = false,
   });
 
   Future<Result<TranscriptionResult>> transcribeFile(
@@ -43,6 +48,7 @@ abstract class Transcriber {
     bool getWordDetails = false,
     bool getSegmentDetails = false,
     int? maxOutputTokens,
+    bool fastDecode = false,
   });
 
   void dispose();

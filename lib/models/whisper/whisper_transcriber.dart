@@ -100,6 +100,7 @@ class WhisperTranscriber implements Transcriber {
     bool getWordDetails = false,
     bool getSegmentDetails = false,
     int? maxOutputTokens,
+    bool fastDecode = false, // ignored: Whisper has a single decoding path
   }) async {
     dev.Timeline.startSync('run_super_encoder');
     final encoded = await _runSuperEncoder(audio);
@@ -174,6 +175,7 @@ class WhisperTranscriber implements Transcriber {
     bool getWordDetails = false,
     bool getSegmentDetails = false,
     int? maxOutputTokens,
+    bool fastDecode = false, // ignored: Whisper has a single decoding path
   }) async {
     final audio = await compute(Audio.instance.loadAudio, path);
     return transcribe(

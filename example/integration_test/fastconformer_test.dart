@@ -23,10 +23,8 @@ void main() {
       print('${record.loggerName}: ${record.time}: ${record.message}');
     });
   });
-
-  // FastConformer output differs only cosmetically from the reference (spaces before
-  // punctuation; CTC "ask" vs RNN-T "Ask"), so compare P&C-/whitespace-invariant.
-
+  
+  // pure CTC
   testWidgets('transcribe test audio (FastConformer CTC)', (tester) async {
     await runTranscribeIntegrationTest(
       type: TranscriberType.fastConformer,
@@ -39,6 +37,22 @@ void main() {
     );
   });
 
+  // hybrid version effectively running only CTC because of fastDecode=True
+  testWidgets('transcribe test audio (FastConformer Hybrid, fastDecode -> CTC)',
+      (tester) async {
+    await runTranscribeIntegrationTest(
+      type: TranscriberType.fastConformerHybrid,
+      modelDirectory: modelDirectory,
+      language: language,
+      testAudioFile: testAudioFile,
+      expectedTranscript: expectedTranscript,
+      compareNormalized: true,
+      fastDecode: true,
+      label: 'FastConformer Hybrid (fastDecode CTC)',
+    );
+  });
+
+  // pure RNN-T
   testWidgets('transcribe test audio (FastConformer RNN-T)', (tester) async {
     await runTranscribeIntegrationTest(
       type: TranscriberType.fastConformerRnnt,
@@ -50,4 +64,19 @@ void main() {
       label: 'FastConformer RNN-T',
     );
   });
+
+  // hybrid version effectively running only RNN-T because all segments are finals for non-streaming
+  testWidgets('transcribe test audio (FastConformer Hybrid, finals -> RNN-T)',
+      (tester) async {
+    await runTranscribeIntegrationTest(
+      type: TranscriberType.fastConformerHybrid,
+      modelDirectory: modelDirectory,
+      language: language,
+      testAudioFile: testAudioFile,
+      expectedTranscript: expectedTranscript,
+      compareNormalized: true,
+      label: 'FastConformer Hybrid (RNN-T)',
+    );
+  });
+
 }

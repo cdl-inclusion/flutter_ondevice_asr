@@ -20,8 +20,9 @@ import 'fastconformer_tokenizer.dart';
 /// probability), and the encoder frame index it was emitted at (for timestamps).
 typedef _Token = ({int id, double logProb, int frame});
 
-/// Abstract base for the on-device FastConformer transcribers. **Not instantiable** —
-/// use [FastConformerCtcTranscriber] or [FastConformerRnntTranscriber].
+/// Abstract base for the on-device FastConformer transcribers (not instantiable).
+/// Use [FastConformerCtcTranscriber], [FastConformerRnntTranscriber], or
+/// [FastConformerHybridTranscriber].
 ///
 /// Both heads share one artifact dir with a single, shared super-encoder
 /// (`super_encoder.onnx`: waveform -> encoder_out, mel preprocessor baked in) and a
@@ -30,7 +31,7 @@ typedef _Token = ({int id, double logProb, int frame});
 /// detok, word grouping (confidence + timestamps), and segment confidence. `loadModel`
 /// parses the common `meta.json` + `tokens.txt`, loads the shared encoder, then defers
 /// the head graph to [_loadHead]; `transcribe` runs the encoder once and hands the
-/// outputs to [_decodeFromEncoder]. Raw waveform in — no Dart featurizer.
+/// outputs to [_decodeFromEncoder].
 abstract class FastConformerTranscriber implements Transcriber {
   static const int sampleRate = kSampleRate;
 
@@ -142,6 +143,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     bool getWordDetails = false, // supported: per-word confidence + timestamps
     bool getSegmentDetails = false, // supported: segment confidence
     int? maxOutputTokens,
+    bool fastDecode = false, // single-head transcribers have one path; only hybrid uses it
   }) async {
     final transcribeTask = dev.TimelineTask()..start('transcribe');
     if (!_loaded) {
@@ -222,6 +224,7 @@ abstract class FastConformerTranscriber implements Transcriber {
     bool getWordDetails = false,
     bool getSegmentDetails = false,
     int? maxOutputTokens,
+    bool fastDecode = false,
   }) async {
     final audio = await compute(Audio.instance.loadAudio, path);
     return transcribe(
@@ -230,6 +233,7 @@ abstract class FastConformerTranscriber implements Transcriber {
       getWordDetails: getWordDetails,
       getSegmentDetails: getSegmentDetails,
       maxOutputTokens: maxOutputTokens,
+      fastDecode: fastDecode,
     );
   }
 
@@ -302,18 +306,18 @@ abstract class FastConformerTranscriber implements Transcriber {
   }
 }
 
-/// FastConformer **CTC** transcriber — the fast, non-autoregressive head.
+/// CTC head implementation (session + greedy decode), shared by
+/// [FastConformerCtcTranscriber] and [FastConformerHybridTranscriber].
 ///
 /// Loads the standalone `ctc_decoder.onnx` (encoder_out -> logprobs) on top of the shared
-/// super-encoder. Because the CTC output is already log-softmax, per-token confidence is
+/// super-encoder. CTC output is already log-softmax, so that per-token confidence is
 /// free (`exp(logProb)`). The encoder_out OrtValue is fed straight into `ctc_decoder` —
 /// no Dart round-trip for the intermediate.
-class FastConformerCtcTranscriber extends FastConformerTranscriber {
+mixin _CtcHead on FastConformerTranscriber {
   OrtSession? _ctcSession;
   String _ctcIn = 'encoder_out';
 
-  @override
-  Future<Result<void>> _loadHead(
+  Future<Result<void>> _loadCtcHead(
       String modelDirectory, Map<String, dynamic> meta) async {
     try {
       final ctcIo = meta['ctc_decoder_io'] as Map<String, dynamic>?;
@@ -329,8 +333,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
     }
   }
 
-  @override
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+  List<_Token> _ctcDecodeFromEncoder(List<OrtValue?> encOutputs,
       {required bool withConfidence}) {
     dev.Timeline.startSync('decode_from_encoder');
     final encOut = encOutputs[0];
@@ -350,7 +353,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
     // probability in [0, 1] (no softmax needed, unlike Whisper's raw logits).
     final logits = outs[0]?.value as List;
     final frames = logits[0] as List; // [T_enc][vocab+1]
-    final tokens = _decode(frames);
+    final tokens = _ctcGreedyDecode(frames);
     _releaseAll(outs);
     dev.Timeline.finishSync();
     return tokens;
@@ -361,7 +364,7 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
   /// (2) collapse repeats (keyed on the raw previous id so "a a" -> 'a' but
   ///     "a blank a" -> 'a a'), drop blank.
   /// Each emitted token carries its log-prob at the emitting frame and that frame index.
-  List<_Token> _decode(List frames) {
+  List<_Token> _ctcGreedyDecode(List frames) {
     dev.Timeline.startSync('decode');
     final out = <_Token>[];
     int prev = _blankId;
@@ -389,26 +392,42 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber {
     return out;
   }
 
+  void _releaseCtcHead() {
+    _ctcSession?.release();
+  }
+}
+
+/// FastConformer CTC transcriber.
+class FastConformerCtcTranscriber extends FastConformerTranscriber with _CtcHead {
+  @override
+  Future<Result<void>> _loadHead(
+          String modelDirectory, Map<String, dynamic> meta) =>
+      _loadCtcHead(modelDirectory, meta);
+
+  @override
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+          {required bool withConfidence}) =>
+      _ctcDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
+
   @override
   void dispose() {
-    _ctcSession?.release();
+    _releaseCtcHead();
     super.dispose();
   }
 }
 
-/// FastConformer **RNN-T (transducer)** transcriber — the accurate head.
+/// RNN-T (transducer) head implementation, shared by
+/// [FastConformerRnntTranscriber] and [FastConformerHybridTranscriber].
 ///
 /// Loads the fused `decoder_joint.onnx` (prediction-net LSTM + joint) on top of the
 /// shared super-encoder. A monotonic stateful greedy loop: blank advances time; a
 /// non-blank emits a token and advances the label + LSTM (h, c) state, capped by
 /// [maxSymbolsPerStep]. The joint emits RAW logits, so per-token confidence needs a
 /// softmax (only run when details are requested).
-class FastConformerRnntTranscriber extends FastConformerTranscriber {
+mixin _RnntHead on FastConformerTranscriber {
   /// Cap on tokens emitted per encoder frame (prevents an infinite loop on a
   /// pathological joint). Mirrors NeMo's `max_symbols_per_step`.
-  final int maxSymbolsPerStep;
-
-  FastConformerRnntTranscriber({this.maxSymbolsPerStep = 10});
+  int maxSymbolsPerStep = 10;
 
   OrtSession? _decoderJointSession;
   int _predHidden = 640;
@@ -417,8 +436,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
   // encoder_outputs, targets, target_length, input_state_1, input_state_2).
   late List<String> _djIn;
 
-  @override
-  Future<Result<void>> _loadHead(
+  Future<Result<void>> _loadRnntHead(
       String modelDirectory, Map<String, dynamic> meta) async {
     try {
       dev.Timeline.startSync('rnnt.load_head');
@@ -437,8 +455,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
     }
   }
 
-  @override
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+  List<_Token> _rnntDecodeFromEncoder(List<OrtValue?> encOutputs,
       {required bool withConfidence}) {
     dev.Timeline.startSync('rnnt.decode_from_encoder');
     // RNN-T slices the encoder output per frame, so read it into a Dart list.
@@ -452,7 +469,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
     }
     if (encLen > tEnc) encLen = tEnc;
     dev.Timeline.finishSync();
-    return _decode(encChannels, encChannels.length, encLen,
+    return _rnntGreedyDecode(encChannels, encChannels.length, encLen,
         withConfidence: withConfidence);
   }
 
@@ -461,7 +478,7 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
   /// (for timestamps) and, when [withConfidence] is set, its log-prob =
   /// log_softmax(joint logits)[k] (so exp(logProb) is a probability); otherwise logProb
   /// is 0 and no softmax is run.
-  List<_Token> _decode(
+  List<_Token> _rnntGreedyDecode(
     List encChannels,
     int dModel,
     int encLen, {
@@ -612,9 +629,96 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber {
     return (index: best, logProb: logProb);
   }
 
+  void _releaseRnntHead() {
+    _decoderJointSession?.release();
+  }
+}
+
+/// FastConformer RNN-T transcriber.
+class FastConformerRnntTranscriber extends FastConformerTranscriber
+    with _RnntHead {
+  FastConformerRnntTranscriber({int maxSymbolsPerStep = 10}) {
+    this.maxSymbolsPerStep = maxSymbolsPerStep;
+  }
+
+  @override
+  Future<Result<void>> _loadHead(
+          String modelDirectory, Map<String, dynamic> meta) =>
+      _loadRnntHead(modelDirectory, meta);
+
+  @override
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+          {required bool withConfidence}) =>
+      _rnntDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
+
   @override
   void dispose() {
-    _decoderJointSession?.release();
+    _releaseRnntHead();
+    super.dispose();
+  }
+}
+
+/// FastConformer hybrid transcriber — both heads on the the shared super-encoder.
+///
+/// This works for hybrid FastConformer checkpoints having one encoder, a CTC and an
+/// RNN-T head). This loads the shared encoder once plus the two small head graphs
+/// (`ctc_decoder.onnx` + `decoder_joint.onnx`) and picks the head per [transcribe] call:
+/// partials (`segmentEnd: false`) use the fast non-autoregressive CTC head, finals the
+/// accurate RNN-T head. 
+/// This logic can be overridden by passing `fastDecode: true` to always decode with CTC.
+class FastConformerHybridTranscriber extends FastConformerTranscriber
+    with _CtcHead, _RnntHead {
+  FastConformerHybridTranscriber({int maxSymbolsPerStep = 10}) {
+    this.maxSymbolsPerStep = maxSymbolsPerStep;
+  }
+
+  // Head choice for the in-flight transcribe() call, set there before decoding starts.
+  // Fine for the sequential call pattern; concurrent transcribe() calls on one instance
+  // are unsupported anyway (the ONNX sessions are shared).
+  bool _useCtc = false;
+
+  @override
+  Future<Result<void>> _loadHead(
+      String modelDirectory, Map<String, dynamic> meta) async {
+    final ctcResult = await _loadCtcHead(modelDirectory, meta);
+    if (ctcResult is Error) {
+      return ctcResult;
+    }
+    return _loadRnntHead(modelDirectory, meta);
+  }
+
+  /// [fastDecode] decodes with the CTC head even when [segmentEnd] is true; otherwise
+  /// the head follows partial-ness (partial -> CTC, final -> RNN-T).
+  @override
+  Future<Result<TranscriptionResult>> transcribe(
+    Float32List audio, {
+    bool segmentEnd = true,
+    bool getWordDetails = false,
+    bool getSegmentDetails = false,
+    int? maxOutputTokens,
+    bool fastDecode = false,
+  }) {
+    _useCtc = fastDecode || !segmentEnd;
+    return super.transcribe(
+      audio,
+      segmentEnd: segmentEnd,
+      getWordDetails: getWordDetails,
+      getSegmentDetails: getSegmentDetails,
+      maxOutputTokens: maxOutputTokens,
+    );
+  }
+
+  @override
+  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
+          {required bool withConfidence}) =>
+      _useCtc
+          ? _ctcDecodeFromEncoder(encOutputs, withConfidence: withConfidence)
+          : _rnntDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
+
+  @override
+  void dispose() {
+    _releaseCtcHead();
+    _releaseRnntHead();
     super.dispose();
   }
 }

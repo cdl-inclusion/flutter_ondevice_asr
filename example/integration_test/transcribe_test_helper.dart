@@ -34,6 +34,7 @@ Future<void> runTranscribeIntegrationTest({
   required String testAudioFile,
   required String expectedTranscript,
   bool compareNormalized = false,
+  bool fastDecode = false, // forwarded to transcribe() (hybrid: pin the CTC head)
   String label = '',
 }) async {
   final totalSw = Stopwatch()..start();
@@ -76,14 +77,22 @@ Future<void> runTranscribeIntegrationTest({
 
   // 3. Transcribe 5x for latency statistics.
   print('\n=== $label: 5 runs for performance statistics ===');
+  // Head prefix for the transcribe timeline event, so the profiling scripts can tell
+  // the runs apart (hybrid decodes finals with RNN-T unless fastDecode pins CTC).
+  final tracePrefix = switch (type) {
+    TranscriberType.fastConformer => 'ctc',
+    TranscriberType.fastConformerHybrid => fastDecode ? 'hybrid.ctc' : 'hybrid.rnnt',
+    _ => 'rnnt',
+  };
   final durations = <double>[];
   String? transcript;
   for (int run = 0; run < 5; run++) {
     stepSw
       ..reset()
       ..start();
-    dev.Timeline.startSync('${type == .fastConformer ? 'ctc' : 'rnnt'}.transcribe');
-    final result = await transcriber.transcribe(audio) as Ok<TranscriptionResult>;
+    dev.Timeline.startSync('$tracePrefix.transcribe');
+    final result = await transcriber.transcribe(audio, fastDecode: fastDecode)
+        as Ok<TranscriptionResult>;
     dev.Timeline.finishSync();
     durations.add(stepSw.elapsedMilliseconds.toDouble());
     if (run == 0) transcript = result.value.text;

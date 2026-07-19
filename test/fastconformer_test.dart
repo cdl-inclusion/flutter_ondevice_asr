@@ -1,4 +1,4 @@
-// Test for both FastConformer versions (CTC and RNN-T).
+// Test for the FastConformer transcribers (CTC, RNN-T, and the hybrid wrapper).
 
 import 'dart:io';
 import 'dart:math';
@@ -27,6 +27,7 @@ void main() {
   final modelDir = toAbsolutePath('assets/transcribers/fastconformer/hybrid_int8');
 
   group('FastConformer super-encoder transcribe (jfk_asknot)', () {
+    // pure CTC
     _headTest(
       label: 'CTC',
       modelDirectory: modelDir,
@@ -35,7 +36,21 @@ void main() {
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
     );
-
+    // hybrid version effectively running only CTC because of fastDecode=True
+    _headTest(
+      label: 'Hybrid (fastDecode -> CTC)',
+      modelDirectory: modelDir,
+      requiredFiles: const [
+        'super_encoder.onnx',
+        'ctc_decoder.onnx',
+        'decoder_joint.onnx',
+      ],
+      create: () => FastConformerHybridTranscriber(),
+      testAudioFile: testAudioFile,
+      expectedTranscript: expectedTranscript,
+      fastDecode: true,
+    );
+    // pure RNN-T
     _headTest(
       label: 'RNN-T',
       modelDirectory: modelDir,
@@ -44,7 +59,21 @@ void main() {
       testAudioFile: testAudioFile,
       expectedTranscript: expectedTranscript,
     );
+    // hybrid version effectively running only RNN-T because all segments are finals for non-streaming
+    _headTest(
+      label: 'Hybrid (finals -> RNN-T)',
+      modelDirectory: modelDir,
+      requiredFiles: const [
+        'super_encoder.onnx',
+        'ctc_decoder.onnx',
+        'decoder_joint.onnx',
+      ],
+      create: () => FastConformerHybridTranscriber(),
+      testAudioFile: testAudioFile,
+      expectedTranscript: expectedTranscript,
+    );
   });
+
 
   // Both heads expose per-word confidence + timestamps and a segment confidence when
   // getWordDetails/getSegmentDetails are set: CTC from its (log-softmax) log-probs, RNN-T
@@ -138,6 +167,7 @@ void _headTest({
   required Transcriber Function() create,
   required String testAudioFile,
   required String expectedTranscript,
+  bool fastDecode = false,
 }) {
   final assetPresent =
       requiredFiles.every((f) => File('$modelDirectory/$f').existsSync());
@@ -164,7 +194,7 @@ void _headTest({
     final durations = <double>[];
     for (int run = 0; run < 3; run++) {
       final stopwatch = Stopwatch()..start();
-      final result = await fc.transcribe(audioData);
+      final result = await fc.transcribe(audioData, fastDecode: fastDecode);
       stopwatch.stop();
       durations.add(stopwatch.elapsedMilliseconds.toDouble());
       if (run == 0) {
