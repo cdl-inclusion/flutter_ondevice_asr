@@ -64,8 +64,16 @@ abstract class FastConformerTranscriber implements Transcriber {
   /// `super_encoder.onnx` outputs ([0] = encoder_out, [1] = encoded_lengths); the base
   /// releases them after this returns. [withConfidence] requests per-token log-probs
   /// (RNN-T gates an extra softmax on it; for CTC the log-prob is free).
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
-      {required bool withConfidence});
+  ///
+  /// [segmentEnd] and [fastDecode] are the caller's flags from [transcribe], forwarded
+  /// so a head-picking implementation (the hybrid) can route on them; the single-head
+  /// transcribers ignore both.
+  List<_Token> _decodeFromEncoder(
+    List<OrtValue?> encOutputs, {
+    required bool withConfidence,
+    required bool segmentEnd,
+    required bool fastDecode,
+  });
 
   // ------------------------------------------------------------- shared: load
 
@@ -151,7 +159,10 @@ abstract class FastConformerTranscriber implements Transcriber {
     }
 
     final withConfidence = getWordDetails || getSegmentDetails;
-    final tokens = await _runEncoderAndDecode(audio, withConfidence: withConfidence);
+    final tokens = await _runEncoderAndDecode(audio,
+        withConfidence: withConfidence,
+        segmentEnd: segmentEnd,
+        fastDecode: fastDecode);
 
     final transcript = _tokenizer.decodeIds(
       tokens.map((t) => t.id).toList(growable: false),
@@ -185,8 +196,12 @@ abstract class FastConformerTranscriber implements Transcriber {
 
   /// Run the shared super-encoder once, then hand its outputs to the head's
   /// [_decodeFromEncoder]. Encoder outputs are released here after decoding.
-  Future<List<_Token>> _runEncoderAndDecode(Float32List audio,
-      {required bool withConfidence}) async {
+  Future<List<_Token>> _runEncoderAndDecode(
+    Float32List audio, {
+    required bool withConfidence,
+    required bool segmentEnd,
+    required bool fastDecode,
+  }) async {
     dev.Timeline.startSync('run_super_encoder');
     final runOptions = OrtRunOptions();
     final audioTensor =
@@ -211,7 +226,10 @@ abstract class FastConformerTranscriber implements Transcriber {
     if (encOutputs == null || encOutputs.isEmpty) return const [];
     try {
       dev.Timeline.finishSync();
-      return _decodeFromEncoder(encOutputs, withConfidence: withConfidence);
+      return _decodeFromEncoder(encOutputs,
+          withConfidence: withConfidence,
+          segmentEnd: segmentEnd,
+          fastDecode: fastDecode);
     } finally {
       _releaseAll(encOutputs);
     }
@@ -405,8 +423,12 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber with _CtcHead
       _loadCtcHead(modelDirectory, meta);
 
   @override
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
-          {required bool withConfidence}) =>
+  List<_Token> _decodeFromEncoder(
+    List<OrtValue?> encOutputs, {
+    required bool withConfidence,
+    required bool segmentEnd, // ignored: CTC is the only head
+    required bool fastDecode, // ignored: CTC is the only head
+  }) =>
       _ctcDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
 
   @override
@@ -647,8 +669,12 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber
       _loadRnntHead(modelDirectory, meta);
 
   @override
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
-          {required bool withConfidence}) =>
+  List<_Token> _decodeFromEncoder(
+    List<OrtValue?> encOutputs, {
+    required bool withConfidence,
+    required bool segmentEnd, // ignored: RNN-T is the only head
+    required bool fastDecode, // ignored: RNN-T is the only head
+  }) =>
       _rnntDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
 
   @override
@@ -672,11 +698,6 @@ class FastConformerHybridTranscriber extends FastConformerTranscriber
     this.maxSymbolsPerStep = maxSymbolsPerStep;
   }
 
-  // Head choice for the in-flight transcribe() call, set there before decoding starts.
-  // Fine for the sequential call pattern; concurrent transcribe() calls on one instance
-  // are unsupported anyway (the ONNX sessions are shared).
-  bool _useCtc = false;
-
   @override
   Future<Result<void>> _loadHead(
       String modelDirectory, Map<String, dynamic> meta) async {
@@ -687,31 +708,16 @@ class FastConformerHybridTranscriber extends FastConformerTranscriber
     return _loadRnntHead(modelDirectory, meta);
   }
 
-  /// [fastDecode] decodes with the CTC head even when [segmentEnd] is true; otherwise
-  /// the head follows partial-ness (partial -> CTC, final -> RNN-T).
+  /// The head routing: CTC when [fastDecode] pins it or the call is a partial
+  /// (`segmentEnd: false`); the accurate RNN-T head for unpinned finals.
   @override
-  Future<Result<TranscriptionResult>> transcribe(
-    Float32List audio, {
-    bool segmentEnd = true,
-    bool getWordDetails = false,
-    bool getSegmentDetails = false,
-    int? maxOutputTokens,
-    bool fastDecode = false,
-  }) {
-    _useCtc = fastDecode || !segmentEnd;
-    return super.transcribe(
-      audio,
-      segmentEnd: segmentEnd,
-      getWordDetails: getWordDetails,
-      getSegmentDetails: getSegmentDetails,
-      maxOutputTokens: maxOutputTokens,
-    );
-  }
-
-  @override
-  List<_Token> _decodeFromEncoder(List<OrtValue?> encOutputs,
-          {required bool withConfidence}) =>
-      _useCtc
+  List<_Token> _decodeFromEncoder(
+    List<OrtValue?> encOutputs, {
+    required bool withConfidence,
+    required bool segmentEnd,
+    required bool fastDecode,
+  }) =>
+      (fastDecode || !segmentEnd)
           ? _ctcDecodeFromEncoder(encOutputs, withConfidence: withConfidence)
           : _rnntDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
 
