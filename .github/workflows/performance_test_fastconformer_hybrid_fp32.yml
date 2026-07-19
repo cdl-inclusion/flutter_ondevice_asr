@@ -1,4 +1,4 @@
-name: "Performance test - FastConformer hybrid int8 inference"
+name: "Performance test - FastConformer hybrid fp32 inference"
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Performance test - FastConformer hybrid int8 inference
+    name: Performance test - FastConformer hybrid fp32 inference
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment }}
@@ -59,11 +59,12 @@ jobs:
       - name: 'Set Google Project underlying Firebase Project'
         run: gcloud config set project ${{ secrets.PROJECT_ID }}
 
-      - name: 'Download and setup fast conformer int8 model in project asset'
+      - name: 'Download and setup fast conformer fp32 model in project asset'
         run: |
-          mkdir -p assets/transcribers/fastconformer/hybrid_int8
-          gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_INT8_ZIP_BUCKET_PATH }} .
-          unzip fastconformer_hybrid_int8.zip -d assets/transcribers/fastconformer/hybrid_int8
+          sed -i "s|hybrid_int8|hybrid|g" example/integration_test/fastconformer_firebase_performance_test.dart
+          mkdir -p assets/transcribers/fastconformer/hybrid
+          gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_FP32_ZIP_BUCKET_PATH }} .
+          unzip fastconformer_hybrid_fp32.zip -d assets/transcribers/fastconformer/hybrid
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+
