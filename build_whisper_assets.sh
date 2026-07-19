@@ -94,9 +94,9 @@ copy_variant() {
 }
 
 # Only the int8 variant is fully built (super_encoder + vocab) and bundled in pubspec.yaml.
-# The fp32 "default" variant is intentionally left as raw Optimum output by the converter
+# The fp32 variant is intentionally left as raw Optimum output by the converter
 # (see convert_whisper_to_onnx.py run_conversion: super_encoder/vocab built for int8 only).
-copy_variant "default_int8"
+copy_variant "int8"
 
 echo ""
 echo "======================================================================="

@@ -9,7 +9,7 @@ Backends:
 Deps: onnxruntime, librosa, soundfile, numpy - any light ONNX env works.
 
   # measure one backend
-  python benchmark_local.py --backend fc_rnnt --model <fastconformer hybrid_int8 dir> \\
+  python benchmark_local.py --backend fc_rnnt --model <fastconformer int8 dir> \\
       --audio wavs/ --out fc_rnnt_int8.json
   python benchmark_local.py --backend whisper --model <whisper asset dir> \\
       --audio wavs/ --out whisper_int8.json

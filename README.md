@@ -165,12 +165,12 @@ Measured on test audio (`assets/audio/jfk_asknot.wav`, 11 seconds) in non-stream
 | Device | Model | Inference time (avg ± std) |
 | -- | -- | -- |
 | Macbook Pro M2 | default | 576.4 ± 37.3 ms |
-| Macbook Pro M2 | default_int8 | 477.8 ± 22.1 ms |
+| Macbook Pro M2 | int8 | 477.8 ± 22.1 ms |
 | Samsung Galaxy 11A+ Tablet (SM X230)| default | 7758.6 ± 121.4 ms |
-| Samsung Galaxy 11A+ Tablet (SM X230) | default_int8 | 1396.6 ± 143.0 ms |
-| Pixel 6a | default_int8 | 917.2 ± 53.2 ms |
-| Huawei Y9 Prime 2019 (STK-L21) | default_int8 | 3370.0 +- 120.5 ms|
-| Samsung Tablet SM X115 | default_int8 | 1509.8 +- 48.9 ms|
+| Samsung Galaxy 11A+ Tablet (SM X230) | int8 | 1396.6 ± 143.0 ms |
+| Pixel 6a | int8 | 917.2 ± 53.2 ms |
+| Huawei Y9 Prime 2019 (STK-L21) | int8 | 3370.0 +- 120.5 ms|
+| Samsung Tablet SM X115 | int8 | 1509.8 +- 48.9 ms|
 
 
 
@@ -219,7 +219,7 @@ This script runs through these steps:
 1. Downloads Whisper models from HuggingFace using `convert_whisper_to_onnx.py`
 2. Generates preprocessor with `export_whisper_preprocessor.py`
 3. Merges preprocessor + encoder into super-encoder using `merge_preprocessor_encoder.py`
-4. Outputs to `assets/transcribers/whisper/models/{default,default_int8,default_int8_optimum}/`
+4. Outputs to `assets/transcribers/whisper/models/{fp32,int8}/`
 
 For FastConformer, analoguously create a separate environment, install the dependencies and run `build_fastconformer_assets.sh`.
 

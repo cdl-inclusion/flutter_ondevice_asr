@@ -15,7 +15,7 @@ void main() {
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
   const modelDirectory =
-      'assets/transcribers/whisper/models/whisper_tiny/default_int8';
+      'assets/transcribers/whisper/models/whisper_tiny/int8';
   const language = 'en';
 
   // Alternative test audio:

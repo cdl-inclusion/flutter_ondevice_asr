@@ -13,7 +13,7 @@ void main() {
 
   // Model configuration - convert to absolute paths for filesystem access
   final modelDirectory = toAbsolutePath(
-    'assets/transcribers/whisper/models/whisper_tiny/default_int8',
+    'assets/transcribers/whisper/models/whisper_tiny/int8',
   );
   const language = 'en';
 

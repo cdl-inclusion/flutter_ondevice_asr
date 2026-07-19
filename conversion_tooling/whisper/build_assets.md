@@ -27,8 +27,8 @@ HuggingFace Model (openai/whisper-tiny)
 flutter_onnx_whisper/
 ├── models/                              # Temporary build directory (gitignored)
 │   ├── whisper_tiny/                    # Created during build, then deleted
-│   │   ├── default/
-│   │   ├── default_int8/
+│   │   ├── fp32/
+│   │   ├── int8/
 │   └── preprocessor/
 │       └── whisper_preprocessor_80.onnx
 │
@@ -40,15 +40,13 @@ flutter_onnx_whisper/
 │
 └── assets/models/                       # Bundled assets (committed to git)
     └── whisper_tiny/
-        ├── default/
+        ├── fp32/
         │   ├── super_encoder.onnx       # ✅ Merged (preprocessor + encoder)
         │   ├── decoder_model.onnx       # ✅ Copied from HuggingFace
         │   ├── decoder_with_past_model.onnx
         │   ├── config.json
         │   └── generation_config.json
-        ├── default_int8/
-        │   └── ... (same structure)
-        └── default_int8_optimum/
+        └── int8/
             └── ... (same structure)
 ```
 
@@ -94,7 +92,7 @@ pip install -e ".[whisper]"
 
 That's it! The script will:
 1. Download Whisper model from HuggingFace
-2. Export 3 variants (default, int8, int8_optimum)
+2. Export 2 variants (fp32, int8)
 3. Create preprocessor
 4. Merge preprocessor + encoder into super_encoder.onnx
 5. Copy everything to assets/
@@ -115,10 +113,9 @@ That's it! The script will:
 ```bash
 python convert_whisper_to_onnx.py "openai/whisper-tiny" models/whisper_tiny
 ```
-Creates 3 variants in `models/whisper_tiny/`:
-- `default/` - Full precision (FP32)
-- `default_int8/` - Int8 quantized
-- `default_int8_optimum/` - Optimum-optimized int8
+Creates 2 variants in `models/whisper_tiny/`:
+- `fp32/` - Full precision
+- `int8/` - Int8 quantized
 
 ### Step 2: Export Preprocessor
 ```bash
@@ -127,21 +124,21 @@ python export_whisper_preprocessor.py
 Creates `whisper_preprocessor_80.onnx` (66KB)
 
 ### Step 3: Build Each Variant
-For each variant (default, int8, int8_optimum):
+For each variant (fp32, int8):
 
 ```bash
 # Merge preprocessor + encoder
 python merge_preprocessor_encoder.py \
     --preprocessor models/preprocessor/whisper_preprocessor_80.onnx \
-    --encoder models/whisper_tiny/default_int8/encoder_model.onnx \
-    --output assets/models/whisper_tiny/default_int8/super_encoder.onnx
+    --encoder models/whisper_tiny/int8/encoder_model.onnx \
+    --output assets/models/whisper_tiny/int8/super_encoder.onnx
 
 # Copy decoders and configs
-cp models/whisper_tiny/default_int8/decoder*.onnx assets/...
-cp models/whisper_tiny/default_int8/*.json assets/...
+cp models/whisper_tiny/int8/decoder*.onnx assets/...
+cp models/whisper_tiny/int8/*.json assets/...
 
 # Remove standalone encoder (not needed in bundle)
-rm -f assets/models/whisper_tiny/default_int8/encoder_model.onnx
+rm -f assets/models/whisper_tiny/int8/encoder_model.onnx
 ```
 
 ## Output
@@ -160,14 +157,11 @@ Step 2: Exporting preprocessor
 ✓ Preprocessor exported successfully!
 
 Step 3: Building optimized assets
-  Building: whisper_tiny/default
-  ✓ Built default successfully!
+  Building: whisper_tiny/fp32
+  ✓ Built fp32 successfully!
 
-  Building: whisper_tiny/default_int8
-  ✓ Built default_int8 successfully!
-
-  Building: whisper_tiny/default_int8_optimum
-  ✓ Built default_int8_optimum successfully!
+  Building: whisper_tiny/int8
+  ✓ Built int8 successfully!
 
 ✓ All assets built successfully!
 ```
@@ -175,7 +169,7 @@ Step 3: Building optimized assets
 ### Verify Assets
 
 ```bash
-ls -lh assets/models/whisper_tiny/default_int8/
+ls -lh assets/models/whisper_tiny/int8/
 
 # Should see:
 # super_encoder.onnx (11MB)              ← Merged preprocessor + encoder
@@ -215,7 +209,7 @@ Next time you run `build_assets.sh`, it will re-download from HuggingFace.
 
 ### Before (Separate Models)
 ```
-assets/models/whisper_tiny/default_int8/:
+assets/models/whisper_tiny/int8/:
   encoder_model.onnx               11MB  ← Standalone encoder
   decoder_model.onnx              105MB
   decoder_with_past_model.onnx    104MB
@@ -224,7 +218,7 @@ assets/models/whisper_tiny/default_int8/:
 
 ### After (Super Encoder)
 ```
-assets/models/whisper_tiny/default_int8/:
+assets/models/whisper_tiny/int8/:
   super_encoder.onnx               11MB  ← Preprocessor + encoder merged
   decoder_model.onnx              105MB
   decoder_with_past_model.onnx    104MB

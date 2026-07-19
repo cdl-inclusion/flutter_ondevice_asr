@@ -47,7 +47,7 @@ def test_separate_models():
 
     # Run encoder
     encoder_session = ort.InferenceSession(
-        "../assets/models/whisper_tiny/default_int8/encoder_model.onnx",
+        "../assets/models/whisper_tiny/int8/encoder_model.onnx",
         providers=['CPUExecutionProvider']
     )
 

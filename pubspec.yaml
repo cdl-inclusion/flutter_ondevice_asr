@@ -32,6 +32,6 @@ flutter:
    assets:
      - assets/audio/
      - assets/vad/silero_vad/
-     - assets/transcribers/whisper/models/whisper_tiny/default_int8/
-     - assets/transcribers/fastconformer/hybrid_int8/
-     - assets/transcribers/fastconformer/hybrid/
+     - assets/transcribers/whisper/models/whisper_tiny/int8/
+     - assets/transcribers/fastconformer/int8/
+     - assets/transcribers/fastconformer/fp32/

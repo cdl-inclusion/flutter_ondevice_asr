@@ -10,7 +10,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   final tokensPath = toAbsolutePath(
-    'assets/transcribers/fastconformer/hybrid_int8/tokens.txt',
+    'assets/transcribers/fastconformer/int8/tokens.txt',
   );
 
   debugPrint('Unit test paths (absolute, filesystem-based):');

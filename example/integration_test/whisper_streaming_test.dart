@@ -18,7 +18,7 @@ void main() {
       'And so my fellow Americans ask not what you are country can do for you. Ask what you can do for your country.';
 
   const modelDirectory =
-      'assets/transcribers/whisper/models/whisper_tiny/default_int8';
+      'assets/transcribers/whisper/models/whisper_tiny/int8';
   const String language = 'en';
 
   // Streaming configuration

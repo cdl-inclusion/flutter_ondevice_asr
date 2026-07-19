@@ -24,7 +24,7 @@ echo "======================================================================="
 echo "Building FastConformer hybrid assets"
 echo "======================================================================="
 echo "Model:  $MODEL"
-echo "Output: $ASSETS_DIR   (hybrid/ = fp32, hybrid_int8/ = int8)"
+echo "Output: $ASSETS_DIR   (fp32/ + int8/)"
 echo ""
 
 # Check the conversion venv (NeMo + torch + onnx; Python 3.11 recommended on macOS).
@@ -52,8 +52,8 @@ if ! "$PY" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spe
     exit 1
 fi
 
-# Convert DIRECTLY into the assets dir — writes $ASSETS_DIR/hybrid (fp32) +
-# $ASSETS_DIR/hybrid_int8 (int8). The converter clears ONLY the hybrid/ and hybrid_int8/
+# Convert DIRECTLY into the assets dir — writes $ASSETS_DIR/fp32 + $ASSETS_DIR/int8.
+# The converter clears ONLY the fp32/ and int8/
 # subdirs (not the rest of the assets dir). To also parity-check the graphs vs NeMo, add
 # --validate below (fp32 PASS gates; int8 FAIL on the synthetic gate is expected and
 # non-gating — see build_assets.md).

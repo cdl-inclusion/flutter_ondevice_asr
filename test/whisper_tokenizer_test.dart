@@ -9,7 +9,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   final vocabPath = toAbsolutePath(
-    'assets/transcribers/whisper/models/whisper_tiny/default_int8/vocab.json',
+    'assets/transcribers/whisper/models/whisper_tiny/int8/vocab.json',
   );
 
   debugPrint('Unit test paths (absolute, filesystem-based):');

@@ -14,7 +14,7 @@ void main() {
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
   // One HYBRID artifact serves BOTH heads (shared super_encoder + ctc_decoder + decoder_joint).
-  const modelDirectory = 'assets/transcribers/fastconformer/hybrid_int8';
+  const modelDirectory = 'assets/transcribers/fastconformer/int8';
   const language = 'en';
 
   setUp(() {

@@ -11,7 +11,7 @@ void main() {
 
   final testAudioFile = toAbsolutePath('assets/audio/jfk_asknot.wav');
   final modelDirectory = toAbsolutePath(
-    'assets/transcribers/whisper/models/whisper_tiny/default_int8',
+    'assets/transcribers/whisper/models/whisper_tiny/int8',
   );
 
   debugPrint('Unit test paths (absolute, filesystem-based):');

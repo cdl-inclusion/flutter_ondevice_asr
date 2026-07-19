@@ -4,7 +4,7 @@ This is a port of the Dart WhisperTranscriber implementation for inference
 with ONNX Whisper models (super_encoder + decoder architecture).
 
 Command line usage (from conversion_tooling directory):
-    python onnx_whisper_transcriber.py ../assets/transcribers/whisper/models/whisper_tiny/default_int8 ../assets/audio/jfk_asknot.wav
+    python onnx_whisper_transcriber.py ../assets/transcribers/whisper/models/whisper_tiny/int8 ../assets/audio/jfk_asknot.wav
 
 Python usage:
     transcriber = OnnxWhisperTranscriber()

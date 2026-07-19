@@ -41,21 +41,21 @@ from .whisper_preprocessor import WhisperPreprocessor80
 from ..onnx_conversion_constants import ONNX_IR_VERSION as IR_VERSION
 
 
-def convert_to_onnx(original_model_path, default_onnx_folder):
+def convert_to_onnx(original_model_path, fp32_onnx_folder):
     # base conversion to ONNX (uses default opset from Optimum library)
     # Note: opset parameter not supported in Optimum 2.1.0
     ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(
         original_model_path,
         export=True,
     )
-    ort_model.save_pretrained(default_onnx_folder)
+    ort_model.save_pretrained(fp32_onnx_folder)
 
-    for onnx_file in glob.glob(os.path.join(default_onnx_folder, "*.onnx")):
+    for onnx_file in glob.glob(os.path.join(fp32_onnx_folder, "*.onnx")):
         model = onnx.load(onnx_file)
         model.ir_version = IR_VERSION
         onnx.save(model, onnx_file)
 
-    print(f"Model saved to {default_onnx_folder}")
+    print(f"Model saved to {fp32_onnx_folder}")
 
 def copy_config_files(source_dir, target_dir):
 
@@ -231,21 +231,21 @@ def run_conversion(original_model_path: str, onnx_output_folder: str) -> list[st
         onnx_output_folder: Output folder for ONNX models
 
     Returns:
-        list[str]: List of paths to the generated variant folders [default_folder, int8_folder]
+        list[str]: List of paths to the generated variant folders [fp32_folder, int8_folder]
     """
-    default_onnx_folder = os.path.join(onnx_output_folder, 'default')
-    default_int8_onnx_folder = os.path.join(onnx_output_folder, 'default_int8')
+    fp32_onnx_folder = os.path.join(onnx_output_folder, 'fp32')
+    int8_onnx_folder = os.path.join(onnx_output_folder, 'int8')
     preprocessor_folder = os.path.join(onnx_output_folder, 'preprocessor')
 
-    os.makedirs(default_onnx_folder, exist_ok=True)
-    os.makedirs(default_int8_onnx_folder, exist_ok=True)
+    os.makedirs(fp32_onnx_folder, exist_ok=True)
+    os.makedirs(int8_onnx_folder, exist_ok=True)
     os.makedirs(preprocessor_folder, exist_ok=True)
 
     # Convert to ONNX
-    convert_to_onnx(original_model_path, default_onnx_folder)
+    convert_to_onnx(original_model_path, fp32_onnx_folder)
 
     # Quantize to int8
-    quantize_onnx(default_onnx_folder, default_int8_onnx_folder)
+    quantize_onnx(fp32_onnx_folder, int8_onnx_folder)
 
     # Export preprocessor
     print("\n" + "=" * 70)
@@ -263,8 +263,8 @@ def run_conversion(original_model_path: str, onnx_output_folder: str) -> list[st
         # for now we only fully export the int8 variants and skip creating all the components like
         # super encoder for unsupported variants (e.g., default full precision)
         # skip:
-        # ('default', default_onnx_folder),
-        ('default_int8', default_int8_onnx_folder),
+        # ('fp32', fp32_onnx_folder),
+        ('int8', int8_onnx_folder),
     ]
 
     for variant_name, variant_folder in variants:

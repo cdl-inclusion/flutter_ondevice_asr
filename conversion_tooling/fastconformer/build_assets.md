@@ -10,7 +10,7 @@ NeMo hybrid FastConformer (e.g. nvidia/stt_en_fastconformer_hybrid_large_pc)
          ↓
    [build_fastconformer_assets.sh]  →  conversion_tooling/fastconformer/convert_fastconformer.py
          ↓
-   hybrid/ (fp32)   +   hybrid_int8/ (int8)   — each dir contains:
+   fp32/   +   int8/ (int8)   — each dir contains:
      super_encoder.onnx   waveform -> encoder_out   (NeMo mel preprocessor merged into the encoder)
      ctc_decoder.onnx     encoder_out -> logprobs   (CTC head)
      decoder_joint.onnx   fused prednet + joint     (RNN-T with one greedy step)
@@ -23,7 +23,7 @@ NeMo hybrid FastConformer (e.g. nvidia/stt_en_fastconformer_hybrid_large_pc)
 ```
 flutter_ondevice_asr/
 ├── build_fastconformer_assets.sh            # ⭐ run this (from the repo root)
-├── models/fastconformer/                    # temp build dir (gitignored) — hybrid/ + hybrid_int8/
+├── models/fastconformer/                    # temp build dir (gitignored) — fp32/ + int8/
 ├── conversion_tooling/                      # shared runtime modules (used by benchmark_local.py)
 │   ├── onnx_transcriber.py                          # shared Transcriber interface + helpers
 │   ├── onnx_fastconformer_transcriber.py           # NeMo-free ONNX runtime (Dart-port reference)
@@ -32,7 +32,7 @@ flutter_ondevice_asr/
 │       ├── convert_fastconformer_validation.py     # validate_hybrid() vs NeMo (synthetic)
 │       └── convert_fastconformer.py                # local runner (this is what the script calls)
 └── assets/transcribers/fastconformer/
-    └── hybrid_int8/                          # bundled on-device asset (~149 MB)
+    └── int8/                          # bundled on-device asset (~149 MB)
         ├── super_encoder.onnx  ctc_decoder.onnx  decoder_joint.onnx  tokens.txt  meta.json
 ```
 
@@ -52,12 +52,12 @@ cd ..
 ./build_fastconformer_assets.sh /path/to/best_model      # a dir containing model.nemo
 ```
 
-This writes `assets/transcribers/fastconformer/hybrid_int8/` — the asset the Dart tests and
+This writes `assets/transcribers/fastconformer/int8/` — the asset the Dart tests and
 app use.
 
 ## What the build script does
 Runs `python -m conversion_tooling.fastconformer.convert_fastconformer --model <M> --out assets/transcribers/fastconformer/` (from the repo root; add `--validate` in the script for parity checks):
-* loads the checkpoint on CPU, exports the hybrid artifact (fp32 → `hybrid/`)
-* int8-quantizes it (→ `hybrid_int8/`)
+* loads the checkpoint on CPU, exports the hybrid artifact (fp32 → `fp32/`)
+* int8-quantizes it (→ `int8/`)
 * validates both vs original NeMo checkpoint (parity check on synthetic data).
 

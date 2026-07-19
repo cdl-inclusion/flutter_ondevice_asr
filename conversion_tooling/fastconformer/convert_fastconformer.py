@@ -13,7 +13,7 @@ Run as a module from the repo root so the conversion_tooling package resolves:
     python -m conversion_tooling.fastconformer.convert_fastconformer \\
         --model /path/to/best_model/model.nemo --out /tmp/fc_local --validate
 
-Writes <out>/hybrid/ (fp32) and <out>/hybrid_int8/ (int8).
+Writes <out>/fp32/ (fp32) and <out>/int8/ (int8).
 """
 
 import argparse
@@ -48,7 +48,7 @@ def main() -> int:
                          "dir containing one).")
     ap.add_argument("--language", default="en")
     ap.add_argument("--out", required=True,
-                    help="Local output dir; writes <out>/hybrid (fp32) and <out>/hybrid_int8.")
+                    help="Local output dir; writes <out>/fp32 and <out>/int8.")
     ap.add_argument("--validate", action="store_true",
                     help="After building, validate BOTH quant versions vs NeMo (both heads, "
                          "SYNTHETIC signals — a conservative worst case that often fails int8).")
@@ -68,7 +68,7 @@ def main() -> int:
     model.eval()
 
     out = Path(args.out)
-    fp32, int8 = str(out / "hybrid"), str(out / "hybrid_int8")
+    fp32, int8 = str(out / "fp32"), str(out / "int8")
 
     convert(model, fp32, language=args.language, base_model=label)
 
