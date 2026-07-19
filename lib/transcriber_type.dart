@@ -1,1 +1,1 @@
-enum TranscriberType { whisper, fastConformer, fastConformerRnnt, fastConformerHybrid }
+enum TranscriberType { whisper, fastConformerCtc, fastConformerRnnt, fastConformerHybrid }

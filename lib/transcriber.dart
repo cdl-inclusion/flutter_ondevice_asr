@@ -11,7 +11,7 @@ abstract class Transcriber {
     switch (type) {
       case TranscriberType.whisper:
         return WhisperTranscriber();
-      case TranscriberType.fastConformer:
+      case TranscriberType.fastConformerCtc:
         return FastConformerCtcTranscriber();
       case TranscriberType.fastConformerRnnt:
         return FastConformerRnntTranscriber();

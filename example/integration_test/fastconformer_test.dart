@@ -27,7 +27,7 @@ void main() {
   // pure CTC
   testWidgets('transcribe test audio (FastConformer CTC)', (tester) async {
     await runTranscribeIntegrationTest(
-      type: TranscriberType.fastConformer,
+      type: TranscriberType.fastConformerCtc,
       modelDirectory: modelDirectory,
       language: language,
       testAudioFile: testAudioFile,

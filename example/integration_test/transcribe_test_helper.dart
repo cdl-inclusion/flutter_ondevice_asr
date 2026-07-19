@@ -80,7 +80,7 @@ Future<void> runTranscribeIntegrationTest({
   // Head prefix for the transcribe timeline event, so the profiling scripts can tell
   // the runs apart (hybrid decodes finals with RNN-T unless fastDecode pins CTC).
   final tracePrefix = switch (type) {
-    TranscriberType.fastConformer => 'ctc',
+    TranscriberType.fastConformerCtc => 'ctc',
     TranscriberType.fastConformerHybrid => fastDecode ? 'hybrid.ctc' : 'hybrid.rnnt',
     _ => 'rnnt',
   };

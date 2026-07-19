@@ -21,7 +21,7 @@ from setuptools import setup
 if __name__ == "__main__":
     setup(
         name="onnx-conversion-tooling",
-        version="0.6.0",
+        version="0.7.0",
         description="On-device ONNX conversion tooling for Whisper and FastConformer models",
         long_description=__doc__,
         long_description_content_type="text/plain",
