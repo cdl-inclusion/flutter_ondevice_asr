@@ -445,14 +445,15 @@ def convert(model, out_dir: str, *, language: str, base_model: str,
 
 def quantize(fp32_dir: str, int8_dir: str, *,
              quantize_ctc_decoder: bool = False,
-             quantize_decoder_joint: bool = True,
+             quantize_decoder_joint: bool = False,
              per_channel: bool = False,
              ir_version: int = ONNX_IR_VERSION) -> dict:
     """INT8 (dynamic) quantize a hybrid artifact into a sibling dir. The big shared
     ``super_encoder`` needs ``sanitize_opset`` (duplicate ai.onnx imports from the dynamo
-    preprocessor). The tiny ``ctc_decoder`` is kept fp32 by default (quantizing a ~0.5 MB
-    matmul isn't worth the risk); ``decoder_joint`` is quantized by default. The merged mel
-    preprocessor is always kept fp32 (encoder still int8); see ``_quantize_graph``."""
+    preprocessor). Only the ~108M-param ``super_encoder`` is int8 by default; the two decode
+    heads are kept fp32 as this has shown to lead to best results (no WER regression) with 
+    minimal latency/size cost:
+    The merged mel preprocessor is always kept fp32 (encoder still int8); see ``_quantize_graph``."""
     src, dst = Path(fp32_dir), Path(int8_dir)
     # Fresh output dir (clear stale files from a previous quantize).
     if dst.exists():
