@@ -329,6 +329,12 @@ def _export_graphs(model, out_dir: str, *, opset: int = ONNX_OPSET,
     }
 
 
+# Encoder subgraph is given this name prefix during super-encoder assembly
+# (see convert()), so every node in super_encoder.onnx wiithout this prefix belongs
+# to the merged preprocessor. quantize() uses that to keep the mel front end fp32.
+ENC_PREFIX = "enc/"
+
+
 def convert(model, out_dir: str, *, language: str, base_model: str,
                                 opset: int = ONNX_OPSET,
                                 ir_version: int = ONNX_IR_VERSION) -> dict:
@@ -361,12 +367,13 @@ def convert(model, out_dir: str, *, language: str, base_model: str,
     # merge rather than re-trace because NeMo's encoder only exports cleanly via its own
     # model.export(); the encoder graph is prefixed `enc/` to avoid name collisions.
     pre = onnx.load(str(g["preproc_path"]))
-    enc = compose.add_prefix(onnx.load(str(g["encoder_path"])), prefix="enc/")
+    enc = compose.add_prefix(onnx.load(str(g["encoder_path"])), prefix=ENC_PREFIX)
     in_audio, in_len = (g["encoder_io"]["inputs"][0]["name"],
                         g["encoder_io"]["inputs"][1]["name"])
     merged = compose.merge_models(
         pre, enc,
-        io_map=[("features", f"enc/{in_audio}"), ("features_lens", f"enc/{in_len}")])
+        io_map=[("features", f"{ENC_PREFIX}{in_audio}"),
+                ("features_lens", f"{ENC_PREFIX}{in_len}")])
     super_path = out / "super_encoder.onnx"
     onnx.save(merged, str(super_path))
     onnx_versions = _pin_opset_and_ir(super_path, opset, ir_version)
@@ -438,13 +445,15 @@ def convert(model, out_dir: str, *, language: str, base_model: str,
 
 def quantize(fp32_dir: str, int8_dir: str, *,
              quantize_ctc_decoder: bool = False,
-             quantize_decoder_joint: bool = True,
+             quantize_decoder_joint: bool = False,
              per_channel: bool = False,
              ir_version: int = ONNX_IR_VERSION) -> dict:
     """INT8 (dynamic) quantize a hybrid artifact into a sibling dir. The big shared
     ``super_encoder`` needs ``sanitize_opset`` (duplicate ai.onnx imports from the dynamo
-    preprocessor). The tiny ``ctc_decoder`` is kept fp32 by default (quantizing a ~0.5 MB
-    matmul isn't worth the risk); ``decoder_joint`` is quantized by default."""
+    preprocessor). Only the ~108M-param ``super_encoder`` is int8 by default; the two decode
+    heads are kept fp32 as this has shown to lead to best results (no WER regression) with 
+    minimal latency/size cost:
+    The merged mel preprocessor is always kept fp32 (encoder still int8); see ``_quantize_graph``."""
     src, dst = Path(fp32_dir), Path(int8_dir)
     # Fresh output dir (clear stale files from a previous quantize).
     if dst.exists():
@@ -476,6 +485,7 @@ def quantize(fp32_dir: str, int8_dir: str, *,
     meta["quantization"] = "int8"
     meta["ctc_decoder_quantized"] = quantize_ctc_decoder
     meta["decoder_joint_quantized"] = quantize_decoder_joint
+    meta["preproc_fp32"] = True  # mel front end always kept fp32 (see _quantize_graph)
     meta["per_channel"] = per_channel
     meta["fp32_dir"] = str(src)
     meta["int8_size_mb"] = round(
@@ -517,15 +527,22 @@ def _quantize_graph(src: Path, dst: Path, ir_version: int,
     ``per_channel`` gives each weight output channel its own int8 scale (vs one scale
     per tensor). ``sanitize_opset`` normalizes the default opset import before
     quantizing (needed for the merged super-encoder — see ``_sanitize_default_opset``).
+
+    The merged mel preprocessor is always kept fp32, even if other parts are quantized.
+    In the super-encoder the encoder subgraph is prefixed ``ENC_PREFIX``, so if any 
+    enc-prefixed nodes are present this graph is the super-encoder and every node without
+     that prefix (the preprocessor) is excluded from quantization. Graphs with no
+    enc-prefixed nodes (``ctc_decoder``, ``decoder_joint``) are quantized in full.
 """
     from onnxruntime.quantization import QuantType, quantize_dynamic
     import onnx
 
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    m = onnx.load(str(src))
+
     quant_src = src
     if sanitize_opset:
-        m = onnx.load(str(src))
         before = [(op.domain or "ai.onnx", op.version) for op in m.opset_import]
         _sanitize_default_opset(m)
         after = [(op.domain or "ai.onnx", op.version) for op in m.opset_import]
@@ -533,13 +550,22 @@ def _quantize_graph(src: Path, dst: Path, ir_version: int,
         onnx.save(m, str(quant_src))
         print(f"[QUANT] sanitized opset imports for {src.name}: {before} -> {after}")
 
+    # Always keep the merged mel preprocessor fp32. 
+    exclude_nodes = []
+    if any(n.name.startswith(ENC_PREFIX) for n in m.graph.node if n.name):
+        exclude_nodes = [n.name for n in m.graph.node
+                         if n.name and not n.name.startswith(ENC_PREFIX)]
+        print(f"[QUANT] {src.name}: super-encoder detected — keeping {len(exclude_nodes)} "
+              f"preprocessor node(s) fp32 (non-'{ENC_PREFIX}')")
+
     # Quantize ONLY MatMul (-> MatMulInteger). We must NOT quantize Conv: it becomes
     # ConvInteger, which the mobile/on-device ONNX Runtime build has no kernel for
     # ("Could not find an implementation for ConvInteger"), so the model won't load on
     # device. This mirrors the Whisper converter (op_types_to_quantize=['MatMul']). The
     # encoder's Conv2d subsampling therefore stays fp32.
     quantize_dynamic(str(quant_src), str(dst), weight_type=QuantType.QInt8,
-                     op_types_to_quantize=["MatMul"], per_channel=per_channel)
+                     op_types_to_quantize=["MatMul"], per_channel=per_channel,
+                     nodes_to_exclude=exclude_nodes)
     if quant_src != src:
         quant_src.unlink(missing_ok=True)
 
