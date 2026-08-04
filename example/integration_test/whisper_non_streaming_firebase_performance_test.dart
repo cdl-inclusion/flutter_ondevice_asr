@@ -1,3 +1,5 @@
+// ignore_for_file: avoid_print — integration-test progress logging; print is intentional.
+
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_ondevice_asr/transcriber_type.dart';
@@ -14,8 +16,12 @@ void main() {
       'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
   const expectedTranscript =
       'And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.';
-  const modelDirectory =
-      'assets/transcribers/whisper/models/whisper_tiny/int8';
+  // Overridable at build time via --dart-define=MODEL_DIR=... so the same test
+  // can run against different Whisper model sizes (tiny, small, ...).
+  const modelDirectory = String.fromEnvironment(
+    'MODEL_DIR',
+    defaultValue: 'assets/transcribers/whisper/models/whisper_tiny/int8',
+  );
   const String language = 'en';
 
   setUp(() {
