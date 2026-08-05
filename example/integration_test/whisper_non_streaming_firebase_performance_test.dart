@@ -39,8 +39,10 @@ void main() {
         language: language,
         testAudioFile: testAudioFile,
         expectedTranscript: expectedTranscript,
-        // Whisper matches the reference exactly (it emits standard punctuation/casing).
-        compareNormalized: false,
+        // Normalized (P&C-/whitespace-invariant): the SAME test runs across Whisper sizes via
+        // MODEL_DIR, and larger models punctuate differently (whisper-small adds a comma after
+        // "Americans" that tiny omits). For a perf test, matching the words is the right check.
+        compareNormalized: true,
         label: 'Whisper',
       );
     }, streams: ["Dart"]);
