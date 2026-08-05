@@ -6,11 +6,11 @@
 # 2. Copies the output to Flutter assets directory
 #
 # Usage:
-#   ./build_assets.sh [model_id]
+#   ./build_whisper_assets.sh [model_id]
 #
 # Examples:
-#   ./build_assets.sh                      # Uses default: openai/whisper-tiny
-#   ./build_assets.sh openai/whisper-base  # Use a different model
+#   ./build_whisper_assets.sh                      # Uses default: openai/whisper-tiny
+#   ./build_whisper_assets.sh openai/whisper-base  # Use a different model
 
 set -e  # Exit on error
 
@@ -23,10 +23,15 @@ ASSETS_DIR="$PROJECT_ROOT/assets/transcribers/whisper/models"
 # Default model ID (can be overridden)
 MODEL_ID="${1:-openai/whisper-tiny}"
 
+# Derive a filesystem-friendly model name from the model ID.
+# e.g. openai/whisper-small -> whisper_small, openai/whisper-tiny -> whisper_tiny
+MODEL_NAME="$(basename "$MODEL_ID" | tr '-' '_')"
+
 echo "======================================================================="
 echo "Building Flutter Assets from HuggingFace"
 echo "======================================================================="
 echo "Model: $MODEL_ID"
+echo "Model name (output folder): $MODEL_NAME"
 echo "Temp directory: $MODELS_DIR"
 echo "Output: $ASSETS_DIR"
 echo ""
@@ -55,7 +60,7 @@ echo "======================================================================="
 echo ""
 (cd "$PROJECT_ROOT" && python -m conversion_tooling.whisper.convert_whisper_to_onnx \
     "$MODEL_ID" \
-    "$MODELS_DIR/whisper_tiny")
+    "$MODELS_DIR/$MODEL_NAME")
 
 echo ""
 echo "✓ Conversion pipeline completed!"
@@ -71,11 +76,11 @@ copy_variant() {
     local variant=$1
     echo ""
     echo "-------------------------------------------------------------------"
-    echo "Copying: whisper_tiny/$variant"
+    echo "Copying: $MODEL_NAME/$variant"
     echo "-------------------------------------------------------------------"
 
-    local source_dir="$MODELS_DIR/whisper_tiny/$variant"
-    local target_dir="$ASSETS_DIR/whisper_tiny/$variant"
+    local source_dir="$MODELS_DIR/$MODEL_NAME/$variant"
+    local target_dir="$ASSETS_DIR/$MODEL_NAME/$variant"
 
     echo "  → Creating target directory..."
     mkdir -p "$target_dir"

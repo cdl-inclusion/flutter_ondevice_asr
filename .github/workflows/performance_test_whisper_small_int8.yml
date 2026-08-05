@@ -1,4 +1,4 @@
-name: "Performance test - whisper tiny on-device inference"
+name: "Performance test - whisper small on-device inference"
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Performance test - whisper tiny on-device inference
+    name: Performance test - whisper small on-device inference
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment }}
@@ -59,11 +59,11 @@ jobs:
       - name: 'Set Google Project underlying Firebase Project'
         run: gcloud config set project ${{ secrets.PROJECT_ID }}
 
-      - name: 'Download and setup whisper tiny model in project asset'
+      - name: 'Download and setup whisper small model in project asset'
         run: |
-          mkdir -p assets/transcribers/whisper/models/whisper_tiny/int8
-          gcloud storage cp ${{ secrets.WHISPER_TINY_MODEL_ZIP_BUCKET_PATH }} model.zip
-          unzip model.zip -d assets/transcribers/whisper/models/whisper_tiny/int8
+          mkdir -p assets/transcribers/whisper/models/whisper_small/int8
+          gcloud storage cp ${{ secrets.WHISPER_SMALL_MODEL_ZIP_BUCKET_PATH }} model.zip
+          unzip model.zip -d assets/transcribers/whisper/models/whisper_small/int8
 
       #6 Building APK
       - name: Build APK and trigger test on Pixel 8a, 6a, 10a and Galaxy Tab A36, A9+
@@ -75,7 +75,7 @@ jobs:
           gradle wrapper
           ./gradlew app:assembleProfile \
             -Ptarget="integration_test/whisper_non_streaming_firebase_performance_test.dart" \
-            -Pdart-defines="$(echo -n 'MODEL_DIR=assets/transcribers/whisper/models/whisper_tiny/int8' | base64 -w0)"
+            -Pdart-defines="$(echo -n 'MODEL_DIR=assets/transcribers/whisper/models/whisper_small/int8' | base64 -w0)"
           ./gradlew app:assembleAndroidTest
           gcloud firebase test android run --type instrumentation \
             --app ../build/app/outputs/apk/profile/app-profile.apk \
