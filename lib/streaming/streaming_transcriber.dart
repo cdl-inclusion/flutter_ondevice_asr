@@ -24,6 +24,14 @@ class StreamingTranscriber {
   int _minPartialDuration = 500;
   int _maxSegmentDuration = 10000;
 
+  // Incremental streaming (opt-in): non-null iff the wrapped transcriber advertises
+  // [IncrementalStreaming] AND it's enabled. When null, the naive whole-buffer path runs
+  // (unchanged — this is what Whisper always uses). See streaming_rnnt_plan.md.
+  IncrementalStreaming? _streamer;
+  // At VAD segment end, re-decode the whole segment once (best quality, restores punctuation)
+  // vs. commit the streamed result as-is. Default true.
+  bool _fullRedecodeOnFinal = true;
+
   late final SileroVAD _sileroModel;
   late final SileroVADIterator _sileroVad;
   late final StreamController<TranscriptionResult> _transcriptionController;
@@ -41,6 +49,17 @@ class StreamingTranscriber {
   bool _bufferContainsSpeech = false;
 
   bool _isDisposed = false;
+
+  /// Test seam: invoked after every partial/final decode with (isFinal, audioSamples decoded,
+  /// wall-clock decode ms). Null in production (zero overhead). Used by the streaming perf harness
+  /// to measure per-transcription latency without re-implementing the VAD/segmentation loop.
+  @visibleForTesting
+  void Function(bool isFinal, int audioSamples, double decodeMs)? onDecodeTiming;
+
+  /// Test seam: whether a transcription is currently running (fire-and-forget). Lets a driver feed
+  /// deterministically — wait for this to clear before the next chunk so no partial is skipped.
+  @visibleForTesting
+  bool get isTranscribing => _transcriptionInProgress;
 
   StreamingTranscriber._({
     required Transcriber transcriber,
@@ -81,6 +100,19 @@ class StreamingTranscriber {
   /// - [maxSegmentDuration]: Maximum segment length in ms before forcing end (default: **30000**)
   ///   We limit this to the maximum segment length, Whisper can natively handle. We intentionally
   ///   skip any sort of sliding window approaches in the streaming-based transcription for efficiency.
+  ///
+  /// Incremental streaming (only if [transcriber] implements [IncrementalStreaming]:
+  /// - [enableIncrementalStreaming]: use the stateful chunked path for partials (default: **false**).
+  ///   When true (and supported), each partial decodes only the newly-arrived audio (persisting decoder state)
+  ///   instead of re-transcribing the whole growing buffer. Default is **false** (opt-in): route (a)
+  ///   is validated on one clean EN clip but its on-device latency/RTF win and atypical-speech parity
+  ///   are unverified (Phase 3), so the proven naive path stays the default. With this false, ALL
+  ///   transcribers use the naive whole-buffer path — byte-for-byte the pre-streaming behavior.
+  ///   See streaming_rnnt_status.md / streaming_efficiency_model.md.
+  /// - [fullRedecodeOnStreamingFinal]: at VAD segment end, re-decode the whole segment once for
+  ///   the final (default: **true**). Set false to commit
+  ///   the streamed result as-is (cheaper, but the final inherits streaming's chunk-edge/punct
+  ///   differences).
   static Future<StreamingTranscriber> create({
     required Transcriber transcriber,
     double vadThreshold = 0.5,
@@ -89,6 +121,8 @@ class StreamingTranscriber {
     bool enablePartials = true,
     int minPartialDuration = 500,
     int maxSegmentDuration = 30000,
+    bool enableIncrementalStreaming = false,
+    bool fullRedecodeOnStreamingFinal = true,
   }) async {
     final instance = StreamingTranscriber._(
       transcriber: transcriber,
@@ -101,6 +135,13 @@ class StreamingTranscriber {
     instance._enablePartials = enablePartials;
     instance._minPartialDuration = minPartialDuration;
     instance._maxSegmentDuration = maxSegmentDuration;
+
+    // Opt in to incremental streaming only when the transcriber advertises the capability.
+    instance._streamer =
+        (enableIncrementalStreaming && transcriber is IncrementalStreaming)
+            ? transcriber as IncrementalStreaming
+            : null;
+    instance._fullRedecodeOnFinal = fullRedecodeOnStreamingFinal;
 
     await instance._initializeVAD();
     return instance;
@@ -173,6 +214,15 @@ class StreamingTranscriber {
           _isRecordingSpeech = true;
           _bufferContainsSpeech = true;
 
+          // New segment: reset the incremental decoder state so its commit cursor aligns with
+          // the current buffer origin. This line always runs, but only has an effect in
+          // incremental mode: `_streamer` is non-null only when the wrapped transcriber
+          // implements IncrementalStreaming AND it's enabled. On the naive path `_streamer`
+          // is null, so `?.` short-circuits and this is a genuine no-op (nothing streaming
+          // executes) — which is what keeps `enableIncrementalStreaming: false` byte-for-byte
+          // identical to the pre-streaming behavior.
+          _streamer?.streamReset();
+
           if (!_transcriptionInProgress) {
             _newAudioDurationSeconds = 0.0;
           }
@@ -231,11 +281,19 @@ class StreamingTranscriber {
     if (_speechBuffer.length > 0) {
       final audioData = _speechBuffer.toFloat32List();
 
-      final result = await _transcriber.transcribe(
-        audioData,
-        segmentEnd: true,
-        getWordDetails: false,
-      );
+      final streamer = _streamer;
+      final timingSw = onDecodeTiming != null ? (Stopwatch()..start()) : null;
+      final result = (streamer != null && !_fullRedecodeOnFinal)
+          ? await streamer.streamTranscribe(audioData, flush: true)
+          : await _transcriber.transcribe(
+              audioData,
+              segmentEnd: true,
+              getWordDetails: false,
+            );
+      streamer?.streamReset();
+      if (timingSw != null) {
+        onDecodeTiming!(true, audioData.length, timingSw.elapsedMicroseconds / 1000.0);
+      }
 
       // Only emit if we got actual text
       if (result is Ok<TranscriptionResult> && result.value.text.isNotEmpty) {
@@ -260,11 +318,29 @@ class StreamingTranscriber {
     required bool isFinal,
   }) async {
     try {
-      final result = await _transcriber.transcribe(
-        audio,
-        segmentEnd: isFinal,
-        getWordDetails: false,
-      );
+      final Result<TranscriptionResult> result;
+      final streamer = _streamer;
+      final timingSw = onDecodeTiming != null ? (Stopwatch()..start()) : null;
+      if (streamer != null) {
+        // Incremental path. Partials (and the final when re-decode is off) decode only the
+        // new audio via the persisted decoder state; the final uses a full re-decode by
+        // default for best quality. Reset after any final so the next segment (incl. a
+        // max-duration forced split mid-speech) starts clean.
+        result = (isFinal && _fullRedecodeOnFinal)
+            ? await _transcriber.transcribe(audio,
+                segmentEnd: true, getWordDetails: false)
+            : await streamer.streamTranscribe(audio, flush: isFinal);
+        if (isFinal) streamer.streamReset();
+      } else {
+        result = await _transcriber.transcribe(
+          audio,
+          segmentEnd: isFinal,
+          getWordDetails: false,
+        );
+      }
+      if (timingSw != null) {
+        onDecodeTiming!(isFinal, audio.length, timingSw.elapsedMicroseconds / 1000.0);
+      }
 
       // Only emit if we got actual text
       if (result is Ok<TranscriptionResult> && result.value.text.isNotEmpty) {

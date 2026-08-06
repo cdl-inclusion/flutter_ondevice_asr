@@ -1,0 +1,7 @@
+# Runtime deps for the ONNX FastConformer reference transcribers + streaming calibration tools
+# (onnx_fastconformer_transcriber.py, calibrate_streaming_rnnt.py, calibrate_streaming_ctc.py,
+#  test_streaming_parity.py). Install into conversion_tooling/fastconformer/venv:
+#   fastconformer/venv/bin/pip install -r requirements.txt
+numpy
+onnxruntime
+librosa

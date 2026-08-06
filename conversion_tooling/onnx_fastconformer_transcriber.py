@@ -36,21 +36,29 @@ def _detok(vocab: list[str], ids: list[int]) -> str:
     return "".join(vocab[i] for i in ids).replace("▁", " ").strip()
 
 
-def ctc_greedy_decode(log_probs: np.ndarray, blank_id: int) -> list[int]:
-    """Greedy CTC: argmax per frame, collapse repeatitions, drop blank.
+def ctc_greedy_range(log_probs: np.ndarray, start: int, end: int, prev: int,
+                     blank_id: int) -> tuple[list[int], int]:
+    """Greedy CTC over frames ``[start, end)``, continuing the collapse from ``prev`` (the last
+    RAW argmax id of the previous range, possibly blank) and returning ``(emitted_ids, prev)``
+    so a streaming caller can seed the next chunk. ``log_probs``: [T, V+1]. Standard collapse
+    keyed on the raw previous id so that "a a" -> one 'a' but "a <blank> a" -> two 'a's.
 
-    ``log_probs``: [T, V+1]. Standard collapse keyed on the RAW previous id so
-    that "a a" -> one 'a' but "a <blank> a" -> two 'a's.
+    NOTE the seed is the last raw argmax (may be blank), NOT the last emitted token — that is what
+    keeps the collapse continuous across a chunk boundary (a token straddling it isn't double-emitted).
     """
     ids = log_probs.argmax(axis=-1)
     out: list[int] = []
-    prev = blank_id
-    for t in ids:
+    for t in ids[start:end]:
         t = int(t)
         if t != prev and t != blank_id:
             out.append(t)
         prev = t
-    return out
+    return out, prev
+
+
+def ctc_greedy_decode(log_probs: np.ndarray, blank_id: int) -> list[int]:
+    """One-shot greedy CTC (zero seed) over all frames. Thin wrapper over :func:`ctc_greedy_range`."""
+    return ctc_greedy_range(log_probs, 0, len(log_probs), blank_id, blank_id)[0]
 
 
 class OnnxFastConformerCTC(Transcriber):
@@ -92,6 +100,13 @@ class OnnxFastConformerCTC(Transcriber):
             raise FileNotFoundError(f"tokens.txt missing in {model_dir} (needed for detok)")
         self._vocab = _load_tokens(tokens_path)
 
+        # Frame geometry (for streaming): samples of raw audio per encoder frame =
+        # subsampling_factor × window_stride. 8 × 160 = 1280 samples = 80 ms @ 16 kHz.
+        self.subsampling = int(self.meta.get("subsampling_factor") or 8)
+        pp = self.meta.get("preprocessor") or {}
+        self.win_stride = int(pp.get("n_window_stride") or 160)
+        self.samples_per_frame = self.subsampling * self.win_stride
+
         if self.verbose:
             print(f"[ONNX-CTC] loaded {model_dir.name}; blank={self.blank_id}; "
                   f"vocab={len(self._vocab)}")
@@ -117,6 +132,70 @@ class OnnxFastConformerCTC(Transcriber):
             if isinstance(signal_or_path, (str, Path)) \
             else np.asarray(signal_or_path, dtype=np.float32)
         return self.decode(self.log_probs(signal))
+
+    def stream_ids(self, signal_or_path, *, chunk_s=0.8, left_context_s=1.6,
+                   lookahead_s=0.96, drop_frames=None, verbose=False):
+        """Streaming CTC decode (route (a): chunked offline encoder + frame-synchronous CTC).
+
+        The CTC sibling of :meth:`OnnxFastConformerRNNT.stream_ids`: walk the waveform committing
+        ``chunk_s`` per step, re-encode ``[left | chunk | lookahead]``, drop the already-committed
+        left frames, decode the committed frames continuing the collapse from the persisted ``prev``
+        (last RAW argmax, may be blank), and hold back the lookahead tail. CTC has NO decoder state —
+        that single ``prev`` is the only thing carried across chunks.
+        """
+        signal = load_audio(signal_or_path) \
+            if isinstance(signal_or_path, (str, Path)) \
+            else np.asarray(signal_or_path, dtype=np.float32)
+
+        sr = self.SAMPLE_RATE
+        chunk_n = int(round(chunk_s * sr))
+        left_n = int(round(left_context_s * sr))
+        look_n = int(round(lookahead_s * sr))
+        spf = self.samples_per_frame
+
+        prev = self.blank_id
+        ids: list[int] = []
+        n = len(signal)
+        pos = 0                                               # committed sample boundary
+        while pos < n:
+            # Once the remaining audio can't provide a full chunk + lookahead, this is the FINAL
+            # step: commit the whole tail [pos, n) in one go (mirrors the Dart flush). Committing
+            # the tail per-chunk while win_end>=n would re-commit overlapping audio -> duplication.
+            final = pos + chunk_n + look_n >= n
+            commit_end = n if final else pos + chunk_n
+            win_start = max(0, pos - left_n)
+            win_end = n if final else commit_end + look_n     # lookahead as right ctx
+            window = signal[win_start:win_end]
+            lp = self.log_probs(window)                       # [t_win, V+1]
+            t_win = lp.shape[0]
+
+            left_present = pos - win_start
+            drop = drop_frames if drop_frames is not None \
+                else int(round(left_present / spf))
+            drop = max(0, min(drop, t_win))
+
+            # Commit frames up to commit_end; hold back the lookahead tail. On the final step
+            # (no more right context) commit everything.
+            commit_frames = t_win if final \
+                else min(t_win, int(round((commit_end - win_start) / spf)))
+            commit_frames = max(drop, commit_frames)
+
+            hyp, prev = ctc_greedy_range(lp, drop, commit_frames, prev, self.blank_id)
+            ids.extend(hyp)
+            if verbose:
+                print(f"[ctc-stream] pos={pos/sr:.2f}s win=[{win_start/sr:.2f},"
+                      f"{win_end/sr:.2f}]s t_win={t_win} drop={drop} "
+                      f"commit={commit_frames} final={final} prev={prev} emit={len(hyp)}")
+            pos = commit_end
+            if final:
+                break
+        return ids
+
+    def transcribe_streaming(self, signal_or_path, **kw) -> str:
+        """Streaming counterpart of :meth:`transcribe` — see :meth:`stream_ids`."""
+        if self.enc is None:
+            raise RuntimeError("Call load() first.")
+        return self.decode_ids(self.stream_ids(signal_or_path, **kw))
 
 
 class OnnxFastConformerRNNT(Transcriber):
@@ -149,6 +228,13 @@ class OnnxFastConformerRNNT(Transcriber):
         self.pred_hidden = int(self.meta.get("pred_hidden") or 640)
         self.pred_layers = int(self.meta.get("pred_rnn_layers") or 1)
 
+        # Frame geometry (for streaming): samples of raw audio per encoder frame =
+        # subsampling_factor × window_stride. 8 × 160 = 1280 samples = 80 ms @ 16 kHz.
+        self.subsampling = int(self.meta.get("subsampling_factor") or 8)
+        pp = self.meta.get("preprocessor") or {}
+        self.win_stride = int(pp.get("n_window_stride") or 160)
+        self.samples_per_frame = self.subsampling * self.win_stride
+
         se = self.meta.get("super_encoder_io", {})
         self._enc_in = (se.get("input_waveform", "waveforms"),
                         se.get("input_length", "waveforms_lens"))
@@ -176,17 +262,15 @@ class OnnxFastConformerRNNT(Transcriber):
             None, {self._enc_in[0]: audio, self._enc_in[1]: length})
         return np.asarray(enc_out), int(np.asarray(enc_len).reshape(-1)[0])
 
-    def _greedy(self, enc_out: np.ndarray, enc_len: int) -> list[int]:
-        """Monotonic greedy over the fused decoder_joint. enc_out: [1, D, T_enc].
-        SOS = blank (prednet embedding padding_idx); blank advances time, non-blank
-        emits + advances label/state."""
-        T = min(enc_out.shape[2], enc_len)
-        h = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
-        c = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
-        label = self.blank_id
+    def _greedy_range(self, enc_out, start, end, h, c, label):
+        """Monotonic greedy over the fused decoder_joint for encoder frames
+        ``[start, end)``, **continuing from** the passed LSTM state ``(h, c)`` and last
+        ``label``, and **returning** ``(emitted_ids, h, c, label)`` so a streaming caller
+        can persist the state across chunks. enc_out: [1, D, T_enc]. blank advances time;
+        a non-blank emits + advances label/state (capped by ``max_symbols``)."""
         plen = np.array([1], dtype=np.int32)
         hyp: list[int] = []
-        for t in range(T):
+        for t in range(start, end):
             frame = enc_out[:, :, t:t + 1]                    # [1, D, 1]
             for _ in range(self.max_symbols):
                 outs = self.dj.run(None, {
@@ -203,7 +287,90 @@ class OnnxFastConformerRNNT(Transcriber):
                 hyp.append(k)
                 label = k
                 h, c = np.asarray(outs[2]), np.asarray(outs[3])  # new LSTM state
+        return hyp, h, c, label
+
+    def _greedy(self, enc_out: np.ndarray, enc_len: int) -> list[int]:
+        """One-shot greedy (zero initial state) over the whole encoder output. Thin wrapper
+        over :meth:`_greedy_range`; SOS = blank (prednet embedding padding_idx)."""
+        T = min(enc_out.shape[2], enc_len)
+        h = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
+        c = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
+        hyp, _, _, _ = self._greedy_range(enc_out, 0, T, h, c, self.blank_id)
         return hyp
+
+    def stream_ids(self, signal_or_path, *, chunk_s=0.8, left_context_s=1.6,
+                   lookahead_s=0.0, drop_frames=None, verbose=False):
+        """Streaming RNN-T decode based on chunked offline encoder + stateful decoder.
+
+        Walk the waveform committing ``chunk_s`` of audio per step. For each step, re-run the
+        (offline) super encoder over ``[left_context | chunk | lookahead]``, **drop the
+        left-context frames**, decode only the committed (chunk) frames — continuing the LSTM
+        ``(h, c)`` + ``label`` from the previous step — and **hold back** the lookahead frames
+        (they are re-encoded/re-decoded next step, once they have real right context). This
+        bounds per-step work (window, not whole buffer), keeps the decoder's internal LM
+        continuous across chunks, and (via lookahead) recovers the right-context-dependent
+        tokens — punctuation, some word boundaries — that a no-lookahead chunk truncates.
+
+        ``lookahead_s`` = right context held back each step (0 = commit to the chunk edge).
+        ``drop_frames`` overrides the leading-frame drop (calibration); default =
+        ``round(left_present_samples / samples_per_frame)``. Returns the emitted token ids."""
+        signal = load_audio(signal_or_path) \
+            if isinstance(signal_or_path, (str, Path)) \
+            else np.asarray(signal_or_path, dtype=np.float32)
+
+        sr = self.SAMPLE_RATE
+        chunk_n = int(round(chunk_s * sr))
+        left_n = int(round(left_context_s * sr))
+        look_n = int(round(lookahead_s * sr))
+        spf = self.samples_per_frame
+
+        h = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
+        c = np.zeros((self.pred_layers, 1, self.pred_hidden), np.float32)
+        label = self.blank_id
+        ids: list[int] = []
+
+        n = len(signal)
+        pos = 0                                               # committed sample boundary
+        while pos < n:
+            # Once the remaining audio can't provide a full chunk + lookahead, this is the FINAL
+            # step: commit the whole tail [pos, n) in one go (mirrors the Dart flush). Committing
+            # the tail per-chunk while win_end>=n would re-commit overlapping audio -> duplication.
+            final = pos + chunk_n + look_n >= n
+            commit_end = n if final else pos + chunk_n
+            win_start = max(0, pos - left_n)
+            win_end = n if final else commit_end + look_n     # lookahead as right ctx
+            window = signal[win_start:win_end]
+            enc_out, enc_len = self._encode(window)
+            t_win = min(enc_out.shape[2], enc_len)
+
+            left_present = pos - win_start                    # samples of real left context
+            drop = drop_frames if drop_frames is not None \
+                else int(round(left_present / spf))
+            drop = max(0, min(drop, t_win))
+
+            # Commit frames up to commit_end; hold back the lookahead tail. On the final step
+            # (no more right context) commit everything.
+            commit_frames = t_win if final \
+                else min(t_win, int(round((commit_end - win_start) / spf)))
+            commit_frames = max(drop, commit_frames)
+
+            hyp, h, c, label = self._greedy_range(
+                enc_out, drop, commit_frames, h, c, label)
+            ids.extend(hyp)
+            if verbose:
+                print(f"[stream] pos={pos/sr:.2f}s win=[{win_start/sr:.2f},"
+                      f"{win_end/sr:.2f}]s t_win={t_win} drop={drop} "
+                      f"commit={commit_frames} final={final} emit={len(hyp)}")
+            pos = commit_end
+            if final:
+                break
+        return ids
+
+    def transcribe_streaming(self, signal_or_path, **kw) -> str:
+        """Streaming counterpart of :meth:`transcribe` — see :meth:`stream_ids`."""
+        if self.enc is None:
+            raise RuntimeError("Call load() first.")
+        return self.decode_ids(self.stream_ids(signal_or_path, **kw))
 
     def decode_ids(self, ids: list[int]) -> str:
         return _detok(self._vocab, ids)
