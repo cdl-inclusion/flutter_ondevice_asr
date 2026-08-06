@@ -1,0 +1,103 @@
+name: "Streaming performance test - FastConformer hybrid int8 (naive vs incremental)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: environment
+        description: Select the environment
+
+jobs:
+  build:
+    name: Streaming performance test - FastConformer hybrid int8
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.2
+      - run: |
+          flutter --version
+          flutter doctor --verbose
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Install Firebase CLI
+        run: sudo npm i -g firebase-tools
+
+      - name: Authenticate google github actions
+        uses: 'google-github-actions/auth@v3'
+        with:
+          credentials_json: ${{ secrets.GOOGLE_SA_KEY }}
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v3'
+
+      - name: 'Set Google Project underlying Firebase Project'
+        run: gcloud config set project ${{ secrets.PROJECT_ID }}
+
+      - name: 'Download and setup fast conformer int8 model in project asset'
+        run: |
+          mkdir -p assets/transcribers/fastconformer/int8
+          gcloud storage cp ${{ secrets.FASTCONFORMER_HYBRID_INT8_ZIP_BUCKET_PATH }} model.zip
+          unzip model.zip -d assets/transcribers/fastconformer/int8
+
+      - name: Build APK and trigger streaming test on Pixel 8a, 6a, 10a and Galaxy Tab A9+, A36
+        timeout-minutes: 25
+        env:
+          CI: true
+        run: |
+          cd example/android
+          gradle wrapper
+          ./gradlew app:assembleProfile -Ptarget="integration_test/fastconformer_streaming_firebase_performance_test.dart"
+          ./gradlew app:assembleAndroidTest
+          gcloud firebase test android run --type instrumentation \
+            --app ../build/app/outputs/apk/profile/app-profile.apk \
+            --test ../build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            --device model=gta9pwifi,version=34,locale=en,orientation=portrait \
+            --device model=akita,version=34,locale=en,orientation=portrait \
+            --device model=bluejay,version=32,locale=en,orientation=portrait \
+            --device model=a36xq,version=35,locale=en,orientation=portrait \
+            --device model=stallion,version=36,locale=en,orientation=portrait \
+            --timeout 20m \
+            --directories-to-pull /sdcard/Documents
+
+      - name: Pull streaming perf summaries (per device)
+        run: |
+          result=`gcloud storage ls ${{ secrets.TEST_LAB_OUTPUT_BUCKET }} | sort -k2r | tail -n 1`
+          declare -A devs=( [akita-34]=pixel_8a [bluejay-32]=pixel_6a [stallion-36]=pixel_10a [gta9pwifi-34]=galaxy_tab_9p [a36xq-35]=galaxy_a36 )
+          for d in "${!devs[@]}"; do
+            label=${devs[$d]}
+            mkdir -p results/$label
+            base="${result}${d}-en-portrait/artifacts/sdcard/Documents"
+            gcloud storage cp "$base/streaming_perf_fc_naive.json" results/$label/streaming_perf_fc_naive.json || true
+            gcloud storage cp "$base/streaming_perf_fc_incremental.json" results/$label/streaming_perf_fc_incremental.json || true
+          done
+
+      - name: Report (phone x mode grid + crossover)
+        run: python3 .github/scripts/streaming_perf_report.py results | tee streaming_perf_report.txt
+
+      - name: Upload streaming perf summaries + report
+        uses: 'actions/upload-artifact@v7'
+        with:
+          name: streaming-perf-fastconformer
+          path: |
+            results/**
+            streaming_perf_report.txt
