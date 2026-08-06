@@ -20,6 +20,12 @@ import 'fastconformer_tokenizer.dart';
 /// probability), and the encoder frame index it was emitted at (for timestamps).
 typedef _Token = ({int id, double logProb, int frame});
 
+/// The result of a (sub-range) RNN-T greedy decode: the emitted [tokens] plus the final
+/// LSTM state (`h`, `c`, each `[layers·hidden]` flattened) and last emitted `label`, so a
+/// streaming caller can persist them and resume decoding on the next audio chunk. One-shot
+/// decoding keeps only [tokens] and discards the state.
+typedef _RnntDecodeState = ({List<_Token> tokens, Float32List h, Float32List c, int label});
+
 /// Abstract base for the on-device FastConformer transcribers (not instantiable).
 /// Use [FastConformerCtcTranscriber], [FastConformerRnntTranscriber], or
 /// [FastConformerHybridTranscriber].
@@ -202,6 +208,23 @@ abstract class FastConformerTranscriber implements Transcriber {
     required bool segmentEnd,
     required bool fastDecode,
   }) async {
+    final encOutputs = await _runEncoder(audio);
+    if (encOutputs == null || encOutputs.isEmpty) return const [];
+    try {
+      return _decodeFromEncoder(encOutputs,
+          withConfidence: withConfidence,
+          segmentEnd: segmentEnd,
+          fastDecode: fastDecode);
+    } finally {
+      _releaseAll(encOutputs);
+    }
+  }
+
+  /// Run the shared super-encoder on [audio] and return its raw outputs
+  /// ([0] = encoder_out `[1, D, T_enc]`, [1] = encoded_lengths). The caller owns the
+  /// returned OrtValues and must [_releaseAll] them. Factored out of [_runEncoderAndDecode]
+  /// so the RNN-T debug hooks can drive the decoder directly off a real encoder output.
+  Future<List<OrtValue?>?> _runEncoder(Float32List audio) async {
     dev.Timeline.startSync('run_super_encoder');
     final runOptions = OrtRunOptions();
     final audioTensor =
@@ -210,10 +233,8 @@ abstract class FastConformerTranscriber implements Transcriber {
       Int64List.fromList([audio.length]),
       [1],
     );
-
-    List<OrtValue?>? encOutputs;
     try {
-      encOutputs = await _encoderSession!.runAsync(runOptions, {
+      return await _encoderSession!.runAsync(runOptions, {
         _inWaveform: audioTensor,
         _inLength: lengthTensor,
       });
@@ -221,17 +242,7 @@ abstract class FastConformerTranscriber implements Transcriber {
       audioTensor.release();
       lengthTensor.release();
       runOptions.release();
-    }
-
-    if (encOutputs == null || encOutputs.isEmpty) return const [];
-    try {
       dev.Timeline.finishSync();
-      return _decodeFromEncoder(encOutputs,
-          withConfidence: withConfidence,
-          segmentEnd: segmentEnd,
-          fastDecode: fastDecode);
-    } finally {
-      _releaseAll(encOutputs);
     }
   }
 
@@ -312,6 +323,11 @@ abstract class FastConformerTranscriber implements Transcriber {
     flush();
     return words;
   }
+
+  /// Test hook: detokenize token ids to text via the loaded tokenizer (mirrors the runtime
+  /// detok used by [transcribe]). Lets streaming/parity tests compare on text, not ids.
+  @visibleForTesting
+  String debugDetok(List<int> ids) => _tokenizer.decodeIds(ids);
 
   void _release(OrtValue? v) {
     if (v is OrtValueTensor) v.release();
@@ -458,6 +474,130 @@ mixin _RnntHead on FastConformerTranscriber {
   // encoder_outputs, targets, target_length, input_state_1, input_state_2).
   late List<String> _djIn;
 
+  // ---------------------------------------------------- incremental streaming state
+  // Incremental streamign via hunked offline encoder + stateful RNN-T decoder with lookahead hold-back.
+  // Calibrated defaults set: commit 0.8 s/step, 1.6 s left context,
+  // 0.48 s lookahead, drop = round(left_present / samples_per_frame). 
+  // Note: we might want to re-calibrate at some point. 
+  //
+  // The CALLER owns the segment audio buffer (e.g. StreamingTranscriber's speech buffer) and passes the whole
+  // segment-so-far to each [streamDecode]; the session keeps only decoder state + a commit
+  // cursor into that buffer. One session at a time per transcriber instance.
+  Float32List? _sH; // persisted LSTM state (flattened [layers·hidden]); null = no session
+  Float32List? _sC;
+  int _sLabel = 0;
+  int _sCommitted = 0; // sample index into the segment buffer committed so far
+  int _sChunkN = 0, _sLeftN = 0, _sLookN = 0; // window sizes in samples
+  final List<_Token> _sTokens = <_Token>[]; // committed tokens this session
+
+  /// Samples of raw audio per encoder frame = subsampling × window_stride (= 8 × 160 = 1280
+  /// = 80 ms @ 16 kHz). Derived from the base's per-frame stride so it tracks meta.json.
+  int get _samplesPerFrame =>
+      (_secondsPerFrame * FastConformerTranscriber.sampleRate).round();
+
+  /// Begin a streaming segment: reset persisted `(h, c)`, label, the commit cursor, and the
+  /// window geometry. Call once per VAD segment, before the first [streamDecode].
+  void streamReset({
+    double chunkS = 0.8,
+    double leftContextS = 1.6,
+    double lookaheadS = 0.48,
+  }) {
+    final stateLen = _predLayers * _predHidden;
+    _sH = Float32List(stateLen);
+    _sC = Float32List(stateLen);
+    _sLabel = _blankId;
+    _sCommitted = 0;
+    _sTokens.clear();
+    const sr = FastConformerTranscriber.sampleRate;
+    _sChunkN = (chunkS * sr).round();
+    _sLeftN = (leftContextS * sr).round();
+    _sLookN = (lookaheadS * sr).round();
+  }
+
+  /// Decode the current streaming segment from its audio-so-far ([segmentAudio], where sample
+  /// 0 = segment start). Commits as many whole chunks as the buffer now allows — each needs
+  /// chunk + lookahead of audio past the commit cursor — re-encoding only the
+  /// `[left | chunk | lookahead]` window per step and continuing the persisted `(h, c, label)`.
+  /// Set [flush] at segment end to commit the remaining tail (which has no further right
+  /// context). Returns the running committed token list (the partial). Idempotent as
+  /// [segmentAudio] grows across calls — already-committed audio is skipped via the cursor.
+  /// Mirrors the Python reference `stream_ids`. [streamReset] must have been called first.
+  Future<List<_Token>> streamDecode(Float32List segmentAudio,
+      {required bool flush}) async {
+    final spf = _samplesPerFrame;
+    final bufEnd = segmentAudio.length;
+    while (true) {
+      final commitEnd = flush ? bufEnd : (_sCommitted + _sChunkN);
+      if (commitEnd <= _sCommitted) break; // nothing new to commit
+      if (!flush && commitEnd + _sLookN > bufEnd) break; // not enough lookahead yet
+
+      final winStart = max(0, _sCommitted - _sLeftN);
+      final winEnd = flush ? bufEnd : min(bufEnd, commitEnd + _sLookN);
+      final window = Float32List.sublistView(segmentAudio, winStart, winEnd);
+
+      final enc = await _runEncoder(window);
+      if (enc == null || enc.isEmpty) break;
+      try {
+        final parsed = _parseEncoderOut(enc);
+        final tWin = parsed.encLen; // already clamped to available frames
+        if (tWin <= 0) {
+          _sCommitted = commitEnd;
+          continue;
+        }
+
+        int drop = ((_sCommitted - winStart) / spf).round();
+        if (drop < 0) drop = 0;
+        if (drop > tWin) drop = tWin;
+
+        // Commit frames up to commitEnd; hold back the lookahead tail for the next step.
+        // On [flush] (segment end) commit all frames. Never commit fewer than we drop.
+        int commitFrames = flush
+            ? tWin
+            : min(tWin, ((commitEnd - winStart) / spf).round());
+        if (commitFrames < drop) commitFrames = drop;
+
+        final res = _rnntGreedyDecodeRange(
+          parsed.encChannels,
+          parsed.encChannels.length,
+          drop,
+          commitFrames,
+          hInit: _sH!,
+          cInit: _sC!,
+          labelInit: _sLabel,
+        );
+        _sTokens.addAll(res.tokens);
+        _sH = res.h;
+        _sC = res.c;
+        _sLabel = res.label;
+        _sCommitted = commitEnd;
+      } finally {
+        _releaseAll(enc);
+      }
+    }
+    return List.unmodifiable(_sTokens);
+  }
+
+  /// Test hook: full-audio streaming decode → token ids. Resets a session, then feeds the
+  /// GROWING segment prefix in [feedSamples]-sized steps (simulating how StreamingTranscriber
+  /// passes its accumulating speech buffer, decoupled from the internal chunk size),
+  /// finalizes, and returns the committed ids. Mirrors the Python reference `stream_ids`.
+  @visibleForTesting
+  Future<List<int>> debugStreamDecodeIds(
+    Float32List audio, {
+    double chunkS = 0.8,
+    double leftContextS = 1.6,
+    double lookaheadS = 0.48,
+    int feedSamples = 1600,
+  }) async {
+    streamReset(
+        chunkS: chunkS, leftContextS: leftContextS, lookaheadS: lookaheadS);
+    for (int end = feedSamples; end < audio.length; end += feedSamples) {
+      await streamDecode(Float32List.sublistView(audio, 0, end), flush: false);
+    }
+    await streamDecode(audio, flush: true);
+    return _sTokens.map((t) => t.id).toList(growable: false);
+  }
+
   Future<Result<void>> _loadRnntHead(
       String modelDirectory, Map<String, dynamic> meta) async {
     try {
@@ -480,8 +620,18 @@ mixin _RnntHead on FastConformerTranscriber {
   List<_Token> _rnntDecodeFromEncoder(List<OrtValue?> encOutputs,
       {required bool withConfidence}) {
     dev.Timeline.startSync('rnnt.decode_from_encoder');
-    // RNN-T slices the encoder output per frame, so read it into a Dart list.
-    // encoder_out: [1, D, T_enc]; batch is always 1 on-device -> encVal[0] is [D][T_enc].
+    final parsed = _parseEncoderOut(encOutputs);
+    dev.Timeline.finishSync();
+    return _rnntGreedyDecode(
+        parsed.encChannels, parsed.encChannels.length, parsed.encLen,
+        withConfidence: withConfidence);
+  }
+
+  /// Read the shared encoder's outputs into a Dart `[D][T_enc]` view + the valid frame
+  /// count. RNN-T slices the encoder output per frame, so it's materialized into a Dart
+  /// list. encoder_out is `[1, D, T_enc]`; batch is always 1 on-device -> `encVal[0]` is
+  /// `[D][T_enc]`. encoded_lengths (output [1]) caps T to the non-padded frames.
+  ({List encChannels, int encLen}) _parseEncoderOut(List<OrtValue?> encOutputs) {
     final encVal = encOutputs[0]?.value as List;
     final encChannels = encVal[0] as List;
     final tEnc = encChannels.isEmpty ? 0 : (encChannels[0] as List).length;
@@ -490,20 +640,55 @@ mixin _RnntHead on FastConformerTranscriber {
       encLen = ((encOutputs[1]!.value as List)[0] as num).toInt();
     }
     if (encLen > tEnc) encLen = tEnc;
-    dev.Timeline.finishSync();
-    return _rnntGreedyDecode(encChannels, encChannels.length, encLen,
-        withConfidence: withConfidence);
+    return (encChannels: encChannels, encLen: encLen);
   }
 
-  /// Greedy RNN-T transducer decode. [encChannels] is `[D][T_enc]` (encoder_out[0]).
-  /// SOS = blank (prednet padding_idx). Returns each emitted token with its frame index
-  /// (for timestamps) and, when [withConfidence] is set, its log-prob =
-  /// log_softmax(joint logits)[k] (so exp(logProb) is a probability); otherwise logProb
-  /// is 0 and no softmax is run.
+  /// Greedy RNN-T transducer decode over the full encoder output with zero initial state.
+  /// Thin wrapper over [_rnntGreedyDecodeRange] (see it for the loop semantics); returns
+  /// only the emitted tokens — the final LSTM state is discarded (one-shot / non-streaming).
+  /// [encChannels] is `[D][T_enc]` (encoder_out[0]).
   List<_Token> _rnntGreedyDecode(
     List encChannels,
     int dModel,
     int encLen, {
+    bool withConfidence = false,
+  }) {
+    final stateLen = _predLayers * _predHidden;
+    return _rnntGreedyDecodeRange(
+      encChannels,
+      dModel,
+      0,
+      encLen,
+      hInit: Float32List(stateLen),
+      cInit: Float32List(stateLen),
+      labelInit: _blankId,
+      withConfidence: withConfidence,
+    ).tokens;
+  }
+
+  /// Greedy RNN-T transducer decode over the frame sub-range `[startFrame, endFrame)` of
+  /// [encChannels] (`[D][T_enc]`), **seeded** with an LSTM state (`hInit`/`cInit`, each a
+  /// `[layers·hidden]` flattened Float32List) and last `labelInit`, and **returning** the
+  /// final state + label so a streaming caller can persist them and resume on the next
+  /// chunk. For one-shot decoding: zero state, `labelInit = blank`, range `[0, encLen)`.
+  /// SOS = blank (prednet padding_idx).
+  ///
+  /// Loop semantics (unchanged from before): blank advances time; a non-blank emits a
+  /// token and advances the label + LSTM (h, c) state, capped by [maxSymbolsPerStep]. When
+  /// [withConfidence] is set each token carries its log-prob = log_softmax(joint logits)[k]
+  /// (so exp(logProb) is a probability); otherwise logProb is 0 and no softmax is run.
+  ///
+  /// The ORT state tensors live entirely inside this call — seeded from the passed data,
+  /// read back out at the end via [_readState] (an exact float32 round-trip). Nothing
+  /// leaks to the caller, so it is safe to call repeatedly across chunks.
+  _RnntDecodeState _rnntGreedyDecodeRange(
+    List encChannels,
+    int dModel,
+    int startFrame,
+    int endFrame, {
+    required Float32List hInit,
+    required Float32List cInit,
+    required int labelInit,
     bool withConfidence = false,
   }) {
     dev.Timeline.startSync('rnnt.decode');
@@ -511,22 +696,22 @@ mixin _RnntHead on FastConformerTranscriber {
     final stateLen = _predLayers * _predHidden; // [layers, 1, hidden]
     final stateShape = [_predLayers, 1, _predHidden];
 
-    // LSTM state, fed back across greedy steps (zero-initialized). For a future
-    // STREAMING mode, (h, c) could be persisted across transcribe() calls instead of
-    // reset here, to carry decoder context between consecutive audio chunks.
-    OrtValueTensor h =
-        OrtValueTensor.createTensorWithDataList(Float32List(stateLen), stateShape);
-    OrtValueTensor c =
-        OrtValueTensor.createTensorWithDataList(Float32List(stateLen), stateShape);
+    // LSTM state seeded from the caller (zero for one-shot; the persisted (h, c) across
+    // chunks in streaming mode). Copy the incoming data so the caller's Float32Lists are
+    // not aliased by the ORT tensors we allocate and release here.
+    OrtValueTensor h = OrtValueTensor.createTensorWithDataList(
+        Float32List.fromList(hInit), stateShape);
+    OrtValueTensor c = OrtValueTensor.createTensorWithDataList(
+        Float32List.fromList(cInit), stateShape);
 
-    int label = _blankId;
+    int label = labelInit;
     final runOptions = OrtRunOptions();
     // target_length is constant [1].
     final targetLenTensor =
         OrtValueTensor.createTensorWithDataList(Int32List.fromList([1]), [1]);
 
     try {
-      for (int t = 0; t < encLen; t++) {
+      for (int t = startFrame; t < endFrame; t++) {
         // encoder frame [1, D, 1].
         final frame = Float32List(dModel);
         for (int d = 0; d < dModel; d++) {
@@ -546,7 +731,7 @@ mixin _RnntHead on FastConformerTranscriber {
               _djIn[0]: frameTensor,
               _djIn[1]: targetTensor,
               _djIn[2]: targetLenTensor,
-              _djIn[3]: h, // LSTM state (see the streaming note above)
+              _djIn[3]: h, // LSTM state (seeded / persisted for streaming)
               _djIn[4]: c,
             });
             targetTensor.release();
@@ -584,14 +769,37 @@ mixin _RnntHead on FastConformerTranscriber {
           frameTensor.release();
         }
       }
+      // Read the final LSTM state back out (exact float32 round-trip) for the caller to
+      // persist across chunks; one-shot callers ignore it.
+      final hOut = _readState(h, stateLen);
+      final cOut = _readState(c, stateLen);
+      dev.Timeline.finishSync();
+      return (tokens: hyp, h: hOut, c: cOut, label: label);
     } finally {
       targetLenTensor.release();
       runOptions.release();
       h.release();
       c.release();
     }
-    dev.Timeline.finishSync();
-    return hyp;
+  }
+
+  /// Flatten an LSTM-state OrtValue (`[layers, 1, hidden]`) into a `[layers·hidden]`
+  /// Float32List. The tensor is float32 internally, so this round-trip is exact.
+  Float32List _readState(OrtValue? state, int len) {
+    final out = Float32List(len);
+    int i = 0;
+    void walk(dynamic v) {
+      if (v is List) {
+        for (final e in v) {
+          walk(e);
+        }
+      } else if (v is num && i < len) {
+        out[i++] = v.toDouble();
+      }
+    }
+
+    walk(state?.value);
+    return out;
   }
 
   /// Pull the 5 decoder_joint input names from meta.json (in graph order). The converter
@@ -656,11 +864,33 @@ mixin _RnntHead on FastConformerTranscriber {
   }
 }
 
-/// FastConformer RNN-T transcriber.
+/// FastConformer RNN-T transcriber. Supports [IncrementalStreaming] (chunked offline encoder +
+/// stateful decoder with lookahead hold-back); see the `_RnntHead` streaming methods.
 class FastConformerRnntTranscriber extends FastConformerTranscriber
-    with _RnntHead {
+    with _RnntHead
+    implements IncrementalStreaming {
   FastConformerRnntTranscriber({int maxSymbolsPerStep = 10}) {
     this.maxSymbolsPerStep = maxSymbolsPerStep;
+  }
+
+  // `streamReset` is provided by `_RnntHead`; here we adapt `streamDecode` to the
+  // Transcriber-shaped result the StreamingTranscriber consumes.
+  @override
+  Future<Result<TranscriptionResult>> streamTranscribe(
+    Float32List segmentAudio, {
+    required bool flush,
+  }) async {
+    if (!_loaded) return Result.error(Exception('Call loadModel() first.'));
+    final tokens = await streamDecode(segmentAudio, flush: flush);
+    final text =
+        _tokenizer.decodeIds(tokens.map((t) => t.id).toList(growable: false));
+    return Result.ok(TranscriptionResult(
+      text: text,
+      isFinal: flush,
+      durationInSeconds: segmentAudio.length / FastConformerTranscriber.sampleRate,
+      timestamp: DateTime.now(),
+      segments: (flush && text.isNotEmpty) ? [text] : null,
+    ));
   }
 
   @override
@@ -676,6 +906,74 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber
     required bool fastDecode, // ignored: RNN-T is the only head
   }) =>
       _rnntDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
+
+  // ---- test hooks (Phase 0 streaming): drive the decoder off a real encoder output ----
+
+  /// One-shot RNN-T decode of [audio] → token ids: runs the shared encoder, then a single
+  /// full-range greedy decode with zero initial state. The reference for the streaming
+  /// state-plumbing parity check ([debugDecodeIdsChunked]).
+  @visibleForTesting
+  Future<List<int>> debugDecodeIdsOneShot(Float32List audio) async {
+    final encOutputs = await _runEncoder(audio);
+    if (encOutputs == null || encOutputs.isEmpty) return const [];
+    try {
+      final parsed = _parseEncoderOut(encOutputs);
+      final tokens = _rnntGreedyDecode(
+          parsed.encChannels, parsed.encChannels.length, parsed.encLen);
+      return tokens.map((t) => t.id).toList(growable: false);
+    } finally {
+      _releaseAll(encOutputs);
+    }
+  }
+
+  /// Chunked RNN-T decode of [audio] → token ids: splits the encoder frame range at
+  /// [splitFrames] and decodes each sub-range in turn, **threading the LSTM (h, c) state +
+  /// last label** from one sub-range to the next — i.e. the streaming decode path, but run
+  /// over a single pre-computed encoder output so the encoder is held constant. With
+  /// correct state plumbing this MUST equal [debugDecodeIdsOneShot] exactly, for any split
+  /// set. (Phase 0 proves the decoder-state hand-off before the encoder is chunked.)
+  @visibleForTesting
+  Future<List<int>> debugDecodeIdsChunked(
+      Float32List audio, List<int> splitFrames) async {
+    final encOutputs = await _runEncoder(audio);
+    if (encOutputs == null || encOutputs.isEmpty) return const [];
+    try {
+      final parsed = _parseEncoderOut(encOutputs);
+      final encChannels = parsed.encChannels;
+      final dModel = encChannels.length;
+      final encLen = parsed.encLen;
+      final stateLen = _predLayers * _predHidden;
+
+      // Persisted-across-chunks state (zero at the segment start), threaded below.
+      Float32List h = Float32List(stateLen);
+      Float32List c = Float32List(stateLen);
+      int label = _blankId;
+      final ids = <int>[];
+
+      // Sub-range boundaries: the in-range splits (sorted, de-duped) then encLen.
+      final bounds = <int>{
+        for (final f in splitFrames)
+          if (f > 0 && f < encLen) f,
+        encLen,
+      }.toList()
+        ..sort();
+
+      int start = 0;
+      for (final end in bounds) {
+        if (end <= start) continue;
+        final res = _rnntGreedyDecodeRange(encChannels, dModel, start, end,
+            hInit: h, cInit: c, labelInit: label);
+        ids.addAll(res.tokens.map((t) => t.id));
+        h = res.h;
+        c = res.c;
+        label = res.label;
+        start = end;
+      }
+      return ids;
+    } finally {
+      _releaseAll(encOutputs);
+    }
+  }
 
   @override
   void dispose() {
