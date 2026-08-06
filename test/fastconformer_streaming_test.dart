@@ -1,9 +1,11 @@
 // FastConformer under StreamingTranscriber, both modes:
 //
 //  * NAIVE (enableIncrementalStreaming: false) — VAD segments, each partial/final
-//    re-transcribes the whole speech buffer. The baseline; also what Hybrid/CTC/Whisper use.
-//  * INCREMENTAL (default, RNN-T only) — the stateful chunked path: partials decode only new
-//    audio via persisted decoder state and accumulate; final = full offline re-decode.
+//    re-transcribes the whole speech buffer. The baseline; also what Whisper uses.
+//  * INCREMENTAL — the stateful chunked (route-(a)) path: partials decode only the new audio via
+//    the bounded-window encoder + persisted decoder state and accumulate. Advertised by RNN-T
+//    (persisted (h,c,label)), CTC (persisted `prev` collapse seed), and Hybrid (partials via the
+//    chunked CTC path). Final = full offline re-decode by default (RNN-T head for Hybrid).
 //
 
 import 'dart:io';
@@ -49,10 +51,26 @@ void main() {
       modelDir: modelDir, testAudioFile: testAudioFile, language: language,
       chunkSize: chunkSize, anchors: anchors, assetPresent: assetPresent,
     );
-    // INCREMENTAL — RNN-T is the only head that advertises IncrementalStreaming.
+    // INCREMENTAL — RNN-T, CTC, and Hybrid all advertise IncrementalStreaming.
     _streamingTest(
       label: 'incremental RNN-T',
       type: TranscriberType.fastConformerRnnt,
+      incremental: true,
+      modelDir: modelDir, testAudioFile: testAudioFile, language: language,
+      chunkSize: chunkSize, anchors: anchors, assetPresent: assetPresent,
+    );
+    // Incremental CTC — chunked frame-synchronous partials (`prev`-seeded collapse).
+    _streamingTest(
+      label: 'incremental CTC',
+      type: TranscriberType.fastConformerCtc,
+      incremental: true,
+      modelDir: modelDir, testAudioFile: testAudioFile, language: language,
+      chunkSize: chunkSize, anchors: anchors, assetPresent: assetPresent,
+    );
+    // Incremental Hybrid — partials via the chunked CTC path; final = full RNN-T re-decode.
+    _streamingTest(
+      label: 'incremental Hybrid (partials chunked CTC / finals RNN-T)',
+      type: TranscriberType.fastConformerHybrid,
       incremental: true,
       modelDir: modelDir, testAudioFile: testAudioFile, language: language,
       chunkSize: chunkSize, anchors: anchors, assetPresent: assetPresent,
@@ -78,7 +96,7 @@ void _streamingTest({
     final streaming = await StreamingTranscriber.create(
       transcriber: transcriber,
       vadThreshold: 0.5,
-      eosMinSilence: 300,
+      eosMinSilence: 1000,
       sampleRate: 16000,
       enablePartials: true,
       minPartialDuration: 500,

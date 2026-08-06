@@ -16,6 +16,25 @@ import '../../model/word.dart';
 import '../../util/audio.dart';
 import 'fastconformer_tokenizer.dart';
 
+// Chunked-streaming window geometry.
+//
+// These knobs drive streamed partials only — the committed final is always a full re-decode
+// (fullRedecodeOnStreamingFinal), so correctness is independent of them. Goal: smallest lookahead
+// (= least latency) where partials don't look visibly broken; some streamed-vs-offline error is fine.
+// CTC needs more lookahead than RNN-T: it's frame-synchronous with no decoder state, so a token's
+// spike-run straddling a commit boundary can double-emit (e.g. "your your") without enough right context.
+//
+// Numbers = smallest lookahead artifact-free on both standard int8 on small set of EN clips (not optimized
+// for non-standard speech for now, slow speech may require recalibration for better partials).
+
+const double _kRnntChunkS = 0.8;
+const double _kRnntLeftContextS = 1.6;
+const double _kRnntLookaheadS = 0.48;
+
+const double _kCtcChunkS = 0.8;
+const double _kCtcLeftContextS = 1.6;
+const double _kCtcLookaheadS = 0.8; // CTC boundary needs more right context than RNN-T (see above)
+
 /// One emitted token: its id, the log-prob at the emitting step (`exp(logProb)` is a
 /// probability), and the encoder frame index it was emitted at (for timestamps).
 typedef _Token = ({int id, double logProb, int frame});
@@ -286,6 +305,99 @@ abstract class FastConformerTranscriber implements Transcriber {
     return _secondsPerFrame;
   }
 
+  /// Samples of raw audio per encoder frame = subsampling × window_stride (= 8 × 160 = 1280
+  /// = 80 ms @ 16 kHz). Derived from the per-frame stride so it tracks meta.json. Shared by
+  /// both heads' streaming sessions for the left-frame drop rule.
+  int get _samplesPerFrame =>
+      (_secondsPerFrame * sampleRate).round();
+
+  // ============================ shared chunk-based streaming scaffolding ============================
+  // The chunked-encoder windowing is decoder-agnostic (bounded `[left | chunk | lookahead]` window,
+  // left-frame drop, lookahead hold-back, commit cursor). It lives here so both heads reuse it; only
+  // the per-window decode + the persisted decoder state differ (RNN-T `(h,c,label)` vs CTC `prev`).
+  // Calibrated defaults: commit 0.8 s/step, 1.6 s left, 0.48 s lookahead, drop =
+  // round(left_present / samples_per_frame). One streaming session
+  // at a time per transcriber instance (the hybrid streams via CTC only), so this state is shared.
+  int _wsCommitted = 0; // sample index into the segment buffer committed so far
+  int _wsChunkN = 0, _wsLeftN = 0, _wsLookN = 0; // window sizes in samples
+  final List<_Token> _wsTokens = <_Token>[]; // committed tokens this session
+
+  /// Reset the shared window state (commit cursor, committed tokens, window geometry) at the
+  /// start of a streaming segment. Each head's `streamReset*` calls this AND resets its own
+  /// decoder state (which this deliberately does not touch).
+  void _streamWindowReset({
+    double chunkS = 0.8,
+    double leftContextS = 1.6,
+    double lookaheadS = 0.48,
+  }) {
+    _wsCommitted = 0;
+    _wsTokens.clear();
+    const sr = sampleRate;
+    _wsChunkN = (chunkS * sr).round();
+    _wsLeftN = (leftContextS * sr).round();
+    _wsLookN = (lookaheadS * sr).round();
+  }
+
+  /// The left-frame drop + commit-frame count for one window, from the calibrated
+  /// round-to-nearest-frame rule. [leftPresentSamples] = committed − winStart (already-committed
+  /// left context to drop); [commitSpanSamples] = commitEnd − winStart. On [flush] commit every
+  /// frame; never commit fewer than we drop. Shared by both heads' decode closures.
+  ({int drop, int commitFrames}) _committedFrameRange(
+    int tWin,
+    int leftPresentSamples,
+    int commitSpanSamples, {
+    required bool flush,
+  }) {
+    final spf = _samplesPerFrame;
+    int drop = (leftPresentSamples / spf).round();
+    if (drop < 0) drop = 0;
+    if (drop > tWin) drop = tWin;
+    int commitFrames =
+        flush ? tWin : min(tWin, (commitSpanSamples / spf).round());
+    if (commitFrames < drop) commitFrames = drop;
+    return (drop: drop, commitFrames: commitFrames);
+  }
+
+  /// Generic chunked encoder windowing driver. Walks [segmentAudio] from the commit cursor, committing
+  /// [_wsChunkN] samples per step over a `[left | chunk | lookahead]` window; for each window it
+  /// runs the shared encoder and hands the outputs to [decodeWindow] — which decodes the committed
+  /// frame sub-range, persists ITS OWN decoder state, and returns the emitted tokens (empty for a
+  /// zero-frame window). The driver owns the commit cursor + committed-token list, so a head's
+  /// streaming decode is just this call plus its ~8-line decode closure. [decodeWindow] receives
+  /// the window's `leftPresentSamples` (= committed − winStart) and `commitSpanSamples`
+  /// (= commitEnd − winStart) for [_committedFrameRange]. Idempotent as [segmentAudio] grows
+  /// across calls (already-committed audio is skipped via the cursor). Mirrors the Python
+  /// reference `stream_ids`. A `streamReset*` must have been called first.
+  Future<List<_Token>> _driveStreamingWindows(
+    Float32List segmentAudio, {
+    required bool flush,
+    required List<_Token> Function(
+            List<OrtValue?> enc, int leftPresentSamples, int commitSpanSamples)
+        decodeWindow,
+  }) async {
+    final bufEnd = segmentAudio.length;
+    while (true) {
+      final commitEnd = flush ? bufEnd : (_wsCommitted + _wsChunkN);
+      if (commitEnd <= _wsCommitted) break; // nothing new to commit
+      if (!flush && commitEnd + _wsLookN > bufEnd) break; // not enough lookahead yet
+
+      final winStart = max(0, _wsCommitted - _wsLeftN);
+      final winEnd = flush ? bufEnd : min(bufEnd, commitEnd + _wsLookN);
+      final window = Float32List.sublistView(segmentAudio, winStart, winEnd);
+
+      final enc = await _runEncoder(window);
+      if (enc == null || enc.isEmpty) break;
+      try {
+        _wsTokens.addAll(
+            decodeWindow(enc, _wsCommitted - winStart, commitEnd - winStart));
+      } finally {
+        _releaseAll(enc);
+      }
+      _wsCommitted = commitEnd;
+    }
+    return List.unmodifiable(_wsTokens);
+  }
+
   /// Group emitted tokens into words (split on the `▁` word-boundary marker), with
   /// per-word confidence = the MIN token probability (most conservative, matching the
   /// Whisper transcriber) and start/end timestamps from the emitting frame indices.
@@ -393,16 +505,36 @@ mixin _CtcHead on FastConformerTranscriber {
     return tokens;
   }
 
-  /// Greedy CTC decode over the log-prob frames:
-  /// (1) argmax per frame;
-  /// (2) collapse repeats (keyed on the raw previous id so "a a" -> 'a' but
-  ///     "a blank a" -> 'a a'), drop blank.
-  /// Each emitted token carries its log-prob at the emitting frame and that frame index.
-  List<_Token> _ctcGreedyDecode(List frames) {
+  /// One-shot greedy CTC decode over the whole log-prob frame list (zero seed = blank).
+  /// Thin wrapper over [_ctcGreedyDecodeRange]; behaviour-identical to the pre-streaming
+  /// decode. See that method for the collapse semantics.
+  List<_Token> _ctcGreedyDecode(List frames) =>
+      _ctcGreedyDecodeRange(frames, 0, frames.length, prevInit: _blankId).tokens;
+
+  /// Greedy CTC decode over the frame sub-range `[start, end)` of [frames]
+  /// (`[T_enc][vocab+1]` log-probs), **continuing the collapse from** [prevInit] (the last
+  /// RAW argmax id of the previous range — possibly blank), and **returning** the emitted
+  /// tokens plus the final raw argmax so a streaming caller can seed the next chunk. For
+  /// one-shot decoding: `start = 0`, `end = frames.length`, `prevInit = blank`.
+  ///
+  /// Collapse semantics (unchanged): argmax per frame; emit only on a *change* of argmax
+  /// (a repeated token survives only when the model puts a blank between the two frames, so
+  /// a real "the the" is kept while frame-repeats collapse to one emission), drop blank.
+  /// Each token carries its log-prob at the emitting frame and that (absolute) frame index.
+  ///
+  /// NOTE the seed is the last raw argmax (which may be BLANK), NOT the last emitted token —
+  /// this differs from the RNN-T range decode's `label` seed, and is what keeps the collapse
+  /// continuous across a chunk boundary (a token straddling the edge isn't double-emitted).
+  ({List<_Token> tokens, int prev}) _ctcGreedyDecodeRange(
+    List frames,
+    int start,
+    int end, {
+    required int prevInit,
+  }) {
     dev.Timeline.startSync('decode');
     final out = <_Token>[];
-    int prev = _blankId;
-    for (int t = 0; t < frames.length; t++) {
+    int prev = prevInit;
+    for (int t = start; t < end; t++) {
       final row = frames[t] as List;
       int best = 0;
       double bestVal = (row[0] as num).toDouble();
@@ -413,17 +545,174 @@ mixin _CtcHead on FastConformerTranscriber {
           best = j;
         }
       }
-      // Standard CTC collapse: emit only on a *change* of argmax. A repeated token is
-      // kept only when the model puts a blank between the two frames (so a real "the
-      // the" survives), while frame-repeats of one token collapse to a single emission
-      // — i.e. no spurious stutter.
       if (best != prev && best != _blankId) {
         out.add((id: best, logProb: bestVal, frame: t));
       }
       prev = best;
     }
     dev.Timeline.finishSync();
-    return out;
+    return (tokens: out, prev: prev);
+  }
+
+  /// Run `ctc_decoder` over the shared-encoder outputs and return the `[T_enc][vocab+1]`
+  /// log-prob frames as a **self-contained** Dart list, deep-copied so it stays valid after
+  /// the native tensors are released (the streaming loop re-encodes and releases per chunk).
+  List _ctcLogProbFrames(List<OrtValue?> encOutputs) {
+    final encOut = encOutputs[0];
+    if (encOut == null) return const [];
+    final runOptions = OrtRunOptions();
+    List<OrtValue?> outs;
+    try {
+      outs = _ctcSession!.run(runOptions, {_ctcIn: encOut});
+    } finally {
+      runOptions.release();
+    }
+    try {
+      final logits = outs[0]?.value as List; // [1, T_enc, vocab+1]
+      final frames = logits[0] as List; // [T_enc][vocab+1]
+      return [for (final row in frames) List<num>.from(row as List)];
+    } finally {
+      _releaseAll(outs);
+    }
+  }
+
+  // ---------------------------------------------------- incremental streaming state (CTC)
+  // chunked offline encoder - sibling of `_RnntHead`, reusing the base's `_driveStreamingWindows` scaffolding.
+  // CTC has NO LSTM state — the only cross-chunk decoder state is a single `prev` (last raw
+  // argmax id) that keeps the collapse continuous across boundaries. `_scPrev` is separate from
+  // `_RnntHead`'s state so the hybrid (which mixes in both heads) has no field collision; the
+  // window/cursor/token state is shared in the base (one streaming session per instance).
+  int _scPrev = 0; // last raw argmax id across chunks (may be blank); collapse seed
+
+  /// Begin a streaming CTC segment: reset the collapse seed + the shared window state. Call once
+  /// per VAD segment, before the first [streamDecodeCtc]. Defaults are the CTC-specific calibration
+  /// (see the streaming calibration block at the top of the file — CTC needs ~2× RNN-T's lookahead).
+  void streamResetCtc({
+    double chunkS = _kCtcChunkS,
+    double leftContextS = _kCtcLeftContextS,
+    double lookaheadS = _kCtcLookaheadS,
+  }) {
+    _scPrev = _blankId;
+    _streamWindowReset(
+        chunkS: chunkS, leftContextS: leftContextS, lookaheadS: lookaheadS);
+  }
+
+  /// Incrementally CTC-decode the segment from its audio-so-far ([segmentAudio], sample 0 =
+  /// segment start), via the shared [_driveStreamingWindows] loop. Per window: ctc_decoder over
+  /// `[left | chunk | lookahead]`, drop the already-committed left frames, decode the committed
+  /// frames continuing the collapse from `prev`, hold back the lookahead tail. [flush] at segment
+  /// end commits the remaining tail. Returns the running committed token list; idempotent as
+  /// [segmentAudio] grows. [streamResetCtc] must have been called first.
+  Future<List<_Token>> streamDecodeCtc(Float32List segmentAudio,
+          {required bool flush}) =>
+      _driveStreamingWindows(
+        segmentAudio,
+        flush: flush,
+        decodeWindow: (enc, leftPresentSamples, commitSpanSamples) {
+          final frames = _ctcLogProbFrames(enc);
+          final tWin = frames.length;
+          if (tWin <= 0) return const [];
+          final r = _committedFrameRange(
+              tWin, leftPresentSamples, commitSpanSamples,
+              flush: flush);
+          final res = _ctcGreedyDecodeRange(frames, r.drop, r.commitFrames,
+              prevInit: _scPrev);
+          _scPrev = res.prev;
+          return res.tokens;
+        },
+      );
+
+  /// Adapt the streaming CTC decode to the [TranscriptionResult] the StreamingTranscriber
+  /// consumes. Shared by the CTC and hybrid transcribers' [IncrementalStreaming.streamTranscribe].
+  Future<Result<TranscriptionResult>> streamTranscribeCtc(
+    Float32List segmentAudio, {
+    required bool flush,
+  }) async {
+    if (!_loaded) return Result.error(Exception('Call loadModel() first.'));
+    final tokens = await streamDecodeCtc(segmentAudio, flush: flush);
+    final text =
+        _tokenizer.decodeIds(tokens.map((t) => t.id).toList(growable: false));
+    return Result.ok(TranscriptionResult(
+      text: text,
+      isFinal: flush,
+      durationInSeconds:
+          segmentAudio.length / FastConformerTranscriber.sampleRate,
+      timestamp: DateTime.now(),
+      segments: (flush && text.isNotEmpty) ? [text] : null,
+    ));
+  }
+
+  // ---- test hooks (streaming CTC): mirror the RNN-T debug hooks ----
+
+  /// One-shot CTC decode of [audio] → token ids: run the shared encoder + ctc_decoder, then a
+  /// single full-range greedy decode (zero seed). The reference for [debugDecodeIdsChunkedCtc].
+  @visibleForTesting
+  Future<List<int>> debugDecodeIdsOneShotCtc(Float32List audio) async {
+    final enc = await _runEncoder(audio);
+    if (enc == null || enc.isEmpty) return const [];
+    try {
+      final frames = _ctcLogProbFrames(enc);
+      final res = _ctcGreedyDecodeRange(frames, 0, frames.length,
+          prevInit: _blankId);
+      return res.tokens.map((t) => t.id).toList(growable: false);
+    } finally {
+      _releaseAll(enc);
+    }
+  }
+
+  /// Chunked CTC decode of [audio] → token ids: split the frame range at [splitFrames] and
+  /// decode each sub-range threading the `prev` collapse seed — the streaming decode path over
+  /// a single pre-computed encoder output (encoder held constant). With correct seeding this
+  /// MUST equal [debugDecodeIdsOneShotCtc] exactly, for any split set (Phase-0 analogue).
+  @visibleForTesting
+  Future<List<int>> debugDecodeIdsChunkedCtc(
+      Float32List audio, List<int> splitFrames) async {
+    final enc = await _runEncoder(audio);
+    if (enc == null || enc.isEmpty) return const [];
+    try {
+      final frames = _ctcLogProbFrames(enc);
+      final tEnc = frames.length;
+      int prev = _blankId;
+      final ids = <int>[];
+      final bounds = <int>{
+        for (final f in splitFrames)
+          if (f > 0 && f < tEnc) f,
+        tEnc,
+      }.toList()
+        ..sort();
+      int start = 0;
+      for (final end in bounds) {
+        if (end <= start) continue;
+        final res = _ctcGreedyDecodeRange(frames, start, end, prevInit: prev);
+        ids.addAll(res.tokens.map((t) => t.id));
+        prev = res.prev;
+        start = end;
+      }
+      return ids;
+    } finally {
+      _releaseAll(enc);
+    }
+  }
+
+  /// Full-audio streaming CTC decode → token ids: reset a session, feed the GROWING segment
+  /// prefix in [feedSamples]-sized steps (simulating StreamingTranscriber's accumulating
+  /// buffer), finalize, and return the committed ids. Mirrors [_RnntHead.debugStreamDecodeIds].
+  @visibleForTesting
+  Future<List<int>> debugStreamDecodeIdsCtc(
+    Float32List audio, {
+    double chunkS = _kCtcChunkS,
+    double leftContextS = _kCtcLeftContextS,
+    double lookaheadS = _kCtcLookaheadS,
+    int feedSamples = 1600,
+  }) async {
+    streamResetCtc(
+        chunkS: chunkS, leftContextS: leftContextS, lookaheadS: lookaheadS);
+    for (int end = feedSamples; end < audio.length; end += feedSamples) {
+      await streamDecodeCtc(Float32List.sublistView(audio, 0, end),
+          flush: false);
+    }
+    final tokens = await streamDecodeCtc(audio, flush: true);
+    return tokens.map((t) => t.id).toList(growable: false);
   }
 
   void _releaseCtcHead() {
@@ -431,8 +720,11 @@ mixin _CtcHead on FastConformerTranscriber {
   }
 }
 
-/// FastConformer CTC transcriber.
-class FastConformerCtcTranscriber extends FastConformerTranscriber with _CtcHead {
+/// FastConformer CTC transcriber. Supports [IncrementalStreaming] (chunked offline encoder +
+/// frame-synchronous CTC decode with lookahead hold-back); see the `_CtcHead` streaming methods.
+class FastConformerCtcTranscriber extends FastConformerTranscriber
+    with _CtcHead
+    implements IncrementalStreaming {
   @override
   Future<Result<void>> _loadHead(
           String modelDirectory, Map<String, dynamic> meta) =>
@@ -446,6 +738,18 @@ class FastConformerCtcTranscriber extends FastConformerTranscriber with _CtcHead
     required bool fastDecode, // ignored: CTC is the only head
   }) =>
       _ctcDecodeFromEncoder(encOutputs, withConfidence: withConfidence);
+
+  // `streamResetCtc` / `streamTranscribeCtc` come from `_CtcHead`; expose them under the
+  // IncrementalStreaming interface.
+  @override
+  void streamReset() => streamResetCtc();
+
+  @override
+  Future<Result<TranscriptionResult>> streamTranscribe(
+    Float32List segmentAudio, {
+    required bool flush,
+  }) =>
+      streamTranscribeCtc(segmentAudio, flush: flush);
 
   @override
   void dispose() {
@@ -474,108 +778,64 @@ mixin _RnntHead on FastConformerTranscriber {
   // encoder_outputs, targets, target_length, input_state_1, input_state_2).
   late List<String> _djIn;
 
-  // ---------------------------------------------------- incremental streaming state
-  // Incremental streamign via hunked offline encoder + stateful RNN-T decoder with lookahead hold-back.
-  // Calibrated defaults set: commit 0.8 s/step, 1.6 s left context,
-  // 0.48 s lookahead, drop = round(left_present / samples_per_frame). 
-  // Note: we might want to re-calibrate at some point. 
-  //
-  // The CALLER owns the segment audio buffer (e.g. StreamingTranscriber's speech buffer) and passes the whole
-  // segment-so-far to each [streamDecode]; the session keeps only decoder state + a commit
-  // cursor into that buffer. One session at a time per transcriber instance.
+  // ---------------------------------------------------- incremental streaming state (RNN-T)
+  // chunked offline encoder + stateful RNN-T decoder with lookahead hold-back, reusing
+  // the base's `_driveStreamingWindows` scaffolding. The only cross-chunk decoder state is the
+  // persisted LSTM `(h, c)` + last `label`; the window/cursor/token state is shared in the base.
+  // Note: we might want to re-calibrate the window defaults at some point.
   Float32List? _sH; // persisted LSTM state (flattened [layers·hidden]); null = no session
   Float32List? _sC;
   int _sLabel = 0;
-  int _sCommitted = 0; // sample index into the segment buffer committed so far
-  int _sChunkN = 0, _sLeftN = 0, _sLookN = 0; // window sizes in samples
-  final List<_Token> _sTokens = <_Token>[]; // committed tokens this session
 
-  /// Samples of raw audio per encoder frame = subsampling × window_stride (= 8 × 160 = 1280
-  /// = 80 ms @ 16 kHz). Derived from the base's per-frame stride so it tracks meta.json.
-  int get _samplesPerFrame =>
-      (_secondsPerFrame * FastConformerTranscriber.sampleRate).round();
-
-  /// Begin a streaming segment: reset persisted `(h, c)`, label, the commit cursor, and the
-  /// window geometry. Call once per VAD segment, before the first [streamDecode].
+  /// Begin a streaming segment: reset persisted `(h, c)`, label + the shared window state. Call
+  /// once per VAD segment, before the first [streamDecode]. Defaults are the RNN-T-specific
+  /// calibration (see the streaming calibration block at the top of the file).
   void streamReset({
-    double chunkS = 0.8,
-    double leftContextS = 1.6,
-    double lookaheadS = 0.48,
+    double chunkS = _kRnntChunkS,
+    double leftContextS = _kRnntLeftContextS,
+    double lookaheadS = _kRnntLookaheadS,
   }) {
     final stateLen = _predLayers * _predHidden;
     _sH = Float32List(stateLen);
     _sC = Float32List(stateLen);
     _sLabel = _blankId;
-    _sCommitted = 0;
-    _sTokens.clear();
-    const sr = FastConformerTranscriber.sampleRate;
-    _sChunkN = (chunkS * sr).round();
-    _sLeftN = (leftContextS * sr).round();
-    _sLookN = (lookaheadS * sr).round();
+    _streamWindowReset(
+        chunkS: chunkS, leftContextS: leftContextS, lookaheadS: lookaheadS);
   }
 
-  /// Decode the current streaming segment from its audio-so-far ([segmentAudio], where sample
-  /// 0 = segment start). Commits as many whole chunks as the buffer now allows — each needs
-  /// chunk + lookahead of audio past the commit cursor — re-encoding only the
-  /// `[left | chunk | lookahead]` window per step and continuing the persisted `(h, c, label)`.
-  /// Set [flush] at segment end to commit the remaining tail (which has no further right
-  /// context). Returns the running committed token list (the partial). Idempotent as
-  /// [segmentAudio] grows across calls — already-committed audio is skipped via the cursor.
-  /// Mirrors the Python reference `stream_ids`. [streamReset] must have been called first.
+  /// Decode the current streaming segment from its audio-so-far ([segmentAudio], sample 0 =
+  /// segment start), via the shared [_driveStreamingWindows] loop. Per window: encoder over
+  /// `[left | chunk | lookahead]`, drop the already-committed left frames, decode the committed
+  /// frames continuing the persisted `(h, c, label)`, hold back the lookahead tail. [flush] at
+  /// segment end commits the remaining tail. Returns the running committed token list; idempotent
+  /// as [segmentAudio] grows. [streamReset] must have been called first.
   Future<List<_Token>> streamDecode(Float32List segmentAudio,
-      {required bool flush}) async {
-    final spf = _samplesPerFrame;
-    final bufEnd = segmentAudio.length;
-    while (true) {
-      final commitEnd = flush ? bufEnd : (_sCommitted + _sChunkN);
-      if (commitEnd <= _sCommitted) break; // nothing new to commit
-      if (!flush && commitEnd + _sLookN > bufEnd) break; // not enough lookahead yet
-
-      final winStart = max(0, _sCommitted - _sLeftN);
-      final winEnd = flush ? bufEnd : min(bufEnd, commitEnd + _sLookN);
-      final window = Float32List.sublistView(segmentAudio, winStart, winEnd);
-
-      final enc = await _runEncoder(window);
-      if (enc == null || enc.isEmpty) break;
-      try {
-        final parsed = _parseEncoderOut(enc);
-        final tWin = parsed.encLen; // already clamped to available frames
-        if (tWin <= 0) {
-          _sCommitted = commitEnd;
-          continue;
-        }
-
-        int drop = ((_sCommitted - winStart) / spf).round();
-        if (drop < 0) drop = 0;
-        if (drop > tWin) drop = tWin;
-
-        // Commit frames up to commitEnd; hold back the lookahead tail for the next step.
-        // On [flush] (segment end) commit all frames. Never commit fewer than we drop.
-        int commitFrames = flush
-            ? tWin
-            : min(tWin, ((commitEnd - winStart) / spf).round());
-        if (commitFrames < drop) commitFrames = drop;
-
-        final res = _rnntGreedyDecodeRange(
-          parsed.encChannels,
-          parsed.encChannels.length,
-          drop,
-          commitFrames,
-          hInit: _sH!,
-          cInit: _sC!,
-          labelInit: _sLabel,
-        );
-        _sTokens.addAll(res.tokens);
-        _sH = res.h;
-        _sC = res.c;
-        _sLabel = res.label;
-        _sCommitted = commitEnd;
-      } finally {
-        _releaseAll(enc);
-      }
-    }
-    return List.unmodifiable(_sTokens);
-  }
+          {required bool flush}) =>
+      _driveStreamingWindows(
+        segmentAudio,
+        flush: flush,
+        decodeWindow: (enc, leftPresentSamples, commitSpanSamples) {
+          final parsed = _parseEncoderOut(enc);
+          final tWin = parsed.encLen; // already clamped to available frames
+          if (tWin <= 0) return const [];
+          final r = _committedFrameRange(
+              tWin, leftPresentSamples, commitSpanSamples,
+              flush: flush);
+          final res = _rnntGreedyDecodeRange(
+            parsed.encChannels,
+            parsed.encChannels.length,
+            r.drop,
+            r.commitFrames,
+            hInit: _sH!,
+            cInit: _sC!,
+            labelInit: _sLabel,
+          );
+          _sH = res.h;
+          _sC = res.c;
+          _sLabel = res.label;
+          return res.tokens;
+        },
+      );
 
   /// Test hook: full-audio streaming decode → token ids. Resets a session, then feeds the
   /// GROWING segment prefix in [feedSamples]-sized steps (simulating how StreamingTranscriber
@@ -584,9 +844,9 @@ mixin _RnntHead on FastConformerTranscriber {
   @visibleForTesting
   Future<List<int>> debugStreamDecodeIds(
     Float32List audio, {
-    double chunkS = 0.8,
-    double leftContextS = 1.6,
-    double lookaheadS = 0.48,
+    double chunkS = _kRnntChunkS,
+    double leftContextS = _kRnntLeftContextS,
+    double lookaheadS = _kRnntLookaheadS,
     int feedSamples = 1600,
   }) async {
     streamReset(
@@ -594,8 +854,8 @@ mixin _RnntHead on FastConformerTranscriber {
     for (int end = feedSamples; end < audio.length; end += feedSamples) {
       await streamDecode(Float32List.sublistView(audio, 0, end), flush: false);
     }
-    await streamDecode(audio, flush: true);
-    return _sTokens.map((t) => t.id).toList(growable: false);
+    final tokens = await streamDecode(audio, flush: true);
+    return tokens.map((t) => t.id).toList(growable: false);
   }
 
   Future<Result<void>> _loadRnntHead(
@@ -988,13 +1248,41 @@ class FastConformerRnntTranscriber extends FastConformerTranscriber
 /// RNN-T head). This loads the shared encoder once plus the two small head graphs
 /// (`ctc_decoder.onnx` + `decoder_joint.onnx`) and picks the head per [transcribe] call:
 /// partials (`segmentEnd: false`) use the fast non-autoregressive CTC head, finals the
-/// accurate RNN-T head. 
+/// accurate RNN-T head.
 /// This logic can be overridden by passing `fastDecode: true` to always decode with CTC.
+///
+/// Supports [IncrementalStreaming]: streamed **partials go through the chunked CTC path**
+/// (fast, bounded per-partial cost, cheap decode). The best-quality **final is a full-context
+/// RNN-T re-decode**, which StreamingTranscriber drives via `transcribe(segmentEnd: true)` when
+/// `fullRedecodeOnStreamingFinal` is on (the default); if it's off, the [streamTranscribe] flush
+/// commits the streamed CTC result as-is. This is the ideal hybrid: cheap streaming partials +
+/// accurate final. (CTC partials could later run with less lookahead for lower latency, since the
+/// RNN-T final fixes chunk-edge roughness — not enabled yet.)
 class FastConformerHybridTranscriber extends FastConformerTranscriber
-    with _CtcHead, _RnntHead {
+    with _CtcHead, _RnntHead
+    implements IncrementalStreaming {
   FastConformerHybridTranscriber({int maxSymbolsPerStep = 10}) {
     this.maxSymbolsPerStep = maxSymbolsPerStep;
   }
+
+  // Stream partials via CTC. `streamReset` is inherited from `_RnntHead` (it resets the RNN-T
+  // session); override it — matching that signature — to reset the CTC session instead, since
+  // hybrid partials are CTC. `streamTranscribe` (not on either mixin) adapts the CTC stream.
+  @override
+  void streamReset({
+    double chunkS = _kCtcChunkS,
+    double leftContextS = _kCtcLeftContextS,
+    double lookaheadS = _kCtcLookaheadS,
+  }) =>
+      streamResetCtc(
+          chunkS: chunkS, leftContextS: leftContextS, lookaheadS: lookaheadS);
+
+  @override
+  Future<Result<TranscriptionResult>> streamTranscribe(
+    Float32List segmentAudio, {
+    required bool flush,
+  }) =>
+      streamTranscribeCtc(segmentAudio, flush: flush);
 
   @override
   Future<Result<void>> _loadHead(
