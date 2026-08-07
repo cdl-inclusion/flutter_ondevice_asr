@@ -84,12 +84,15 @@ jobs:
             --device model=bluejay,version=32,locale=en,orientation=portrait \
             --device model=a36xq,version=35,locale=en,orientation=portrait \
             --device model=stallion,version=36,locale=en,orientation=portrait \
+            --results-dir="perf-fc-fp32-${{ github.run_id }}" \
             --timeout 15m \
             --directories-to-pull /sdcard/Documents
 
       - name: Pull performance traces
         run: |
-          result=`gcloud storage ls ${{ secrets.TEST_LAB_OUTPUT_BUCKET }} | sort -k2r | tail -n 1`
+          # Read THIS run's own results dir (pinned via --results-dir), not "newest in the bucket".
+          bucket="${{ secrets.TEST_LAB_OUTPUT_BUCKET }}"; bucket="${bucket%/}"
+          result="${bucket}/perf-fc-fp32-${{ github.run_id }}/"
           result_pixel8a_ctc="${result}akita-34-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
           result_pixel6a_ctc="${result}bluejay-32-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
           result_tab9p_ctc="${result}gta9pwifi-34-en-portrait/artifacts/sdcard/Documents/performance_trace_ctc.json"
