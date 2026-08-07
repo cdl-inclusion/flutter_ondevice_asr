@@ -56,11 +56,6 @@ class StreamingTranscriber {
   @visibleForTesting
   void Function(bool isFinal, int audioSamples, double decodeMs)? onDecodeTiming;
 
-  /// Test seam: whether a transcription is currently running (fire-and-forget). Lets a driver feed
-  /// deterministically — wait for this to clear before the next chunk so no partial is skipped.
-  @visibleForTesting
-  bool get isTranscribing => _transcriptionInProgress;
-
   StreamingTranscriber._({
     required Transcriber transcriber,
     required int sampleRate,
@@ -282,7 +277,8 @@ class StreamingTranscriber {
       final audioData = _speechBuffer.toFloat32List();
 
       final streamer = _streamer;
-      final timingSw = onDecodeTiming != null ? (Stopwatch()..start()) : null;
+      final timingCb = onDecodeTiming;
+      final timingSw = timingCb != null ? (Stopwatch()..start()) : null;
       final result = (streamer != null && !_fullRedecodeOnFinal)
           ? await streamer.streamTranscribe(audioData, flush: true)
           : await _transcriber.transcribe(
@@ -291,8 +287,8 @@ class StreamingTranscriber {
               getWordDetails: false,
             );
       streamer?.streamReset();
-      if (timingSw != null) {
-        onDecodeTiming!(true, audioData.length, timingSw.elapsedMicroseconds / 1000.0);
+      if (timingCb != null) {
+        timingCb(true, audioData.length, timingSw!.elapsedMicroseconds / 1000.0);
       }
 
       // Only emit if we got actual text
@@ -320,7 +316,8 @@ class StreamingTranscriber {
     try {
       final Result<TranscriptionResult> result;
       final streamer = _streamer;
-      final timingSw = onDecodeTiming != null ? (Stopwatch()..start()) : null;
+      final timingCb = onDecodeTiming;
+      final timingSw = timingCb != null ? (Stopwatch()..start()) : null;
       if (streamer != null) {
         // Incremental path. Partials (and the final when re-decode is off) decode only the
         // new audio via the persisted decoder state; the final uses a full re-decode by
@@ -338,8 +335,8 @@ class StreamingTranscriber {
           getWordDetails: false,
         );
       }
-      if (timingSw != null) {
-        onDecodeTiming!(isFinal, audio.length, timingSw.elapsedMicroseconds / 1000.0);
+      if (timingCb != null) {
+        timingCb(isFinal, audio.length, timingSw!.elapsedMicroseconds / 1000.0);
       }
 
       // Only emit if we got actual text
