@@ -1,4 +1,4 @@
-name: "Streaming performance test - whisper tiny int8 (naive)"
+name: "Streaming performance test - whisper small int8 (naive)"
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Streaming performance test - whisper tiny int8
+    name: Streaming performance test - whisper small int8
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment }}
@@ -53,20 +53,22 @@ jobs:
       - name: 'Set Google Project underlying Firebase Project'
         run: gcloud config set project ${{ secrets.PROJECT_ID }}
 
-      - name: 'Download and setup whisper tiny model in project asset'
+      - name: 'Download and setup whisper small model in project asset'
         run: |
-          mkdir -p assets/transcribers/whisper/models/whisper_tiny/int8
-          gcloud storage cp ${{ secrets.WHISPER_TINY_MODEL_ZIP_BUCKET_PATH }} model.zip
-          unzip model.zip -d assets/transcribers/whisper/models/whisper_tiny/int8
+          mkdir -p assets/transcribers/whisper/models/whisper_small/int8
+          gcloud storage cp ${{ secrets.WHISPER_SMALL_MODEL_ZIP_BUCKET_PATH }} model.zip
+          unzip model.zip -d assets/transcribers/whisper/models/whisper_small/int8
 
       - name: Build APK and trigger streaming test on Pixel 8a, 6a, 10a and Galaxy Tab A9+, A36
-        timeout-minutes: 25
+        timeout-minutes: 35
         env:
           CI: true
         run: |
           cd example/android
           gradle wrapper
-          ./gradlew app:assembleProfile -Ptarget="integration_test/whisper_streaming_firebase_performance_test.dart"
+          ./gradlew app:assembleProfile \
+            -Ptarget="integration_test/whisper_streaming_firebase_performance_test.dart" \
+            -Pdart-defines="$(echo -n 'MODEL_DIR=assets/transcribers/whisper/models/whisper_small/int8' | base64 -w0)"
           ./gradlew app:assembleAndroidTest
           gcloud firebase test android run --type instrumentation \
             --app ../build/app/outputs/apk/profile/app-profile.apk \
@@ -76,7 +78,7 @@ jobs:
             --device model=bluejay,version=32,locale=en,orientation=portrait \
             --device model=a36xq,version=35,locale=en,orientation=portrait \
             --device model=stallion,version=36,locale=en,orientation=portrait \
-            --timeout 20m \
+            --timeout 30m \
             --directories-to-pull /sdcard/Documents
 
       - name: Pull streaming perf summaries (per device)
@@ -87,16 +89,16 @@ jobs:
             label=${devs[$d]}
             mkdir -p results/$label
             base="${result}${d}-en-portrait/artifacts/sdcard/Documents"
-            gcloud storage cp "$base/streaming_perf_whisper_tiny_naive.json" results/$label/streaming_perf_whisper_tiny_naive.json || true
+            gcloud storage cp "$base/streaming_perf_whisper_small_naive.json" results/$label/streaming_perf_whisper_small_naive.json || true
           done
 
       - name: Report (phone x mode grid)
-        run: python3 .github/scripts/streaming_perf_report.py results | tee streaming_perf_report_whisper.txt
+        run: python3 .github/scripts/streaming_perf_report.py results | tee streaming_perf_report_whisper_small.txt
 
       - name: Upload streaming perf summaries + report
         uses: 'actions/upload-artifact@v7'
         with:
-          name: streaming-perf-whisper
+          name: streaming-perf-whisper-small
           path: |
             results/**
-            streaming_perf_report_whisper.txt
+            streaming_perf_report_whisper_small.txt

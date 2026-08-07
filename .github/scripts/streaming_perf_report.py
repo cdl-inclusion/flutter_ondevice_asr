@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-MODES = ["whisper_naive", "fc_naive", "fc_incremental"]  # column order
+MODES = ["whisper_tiny_naive", "whisper_small_naive", "fc_naive", "fc_incremental"]  # column order
 
 # Responsiveness budgets (a UX call — tune to taste). We chose 1000/1000 ms as realistic for a user:
 # ~1s is about the limit for live text to still feel snappy. RTF is CPU load, not a gate.
