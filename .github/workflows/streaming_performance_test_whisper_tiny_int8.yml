@@ -76,24 +76,30 @@ jobs:
             --device model=bluejay,version=32,locale=en,orientation=portrait \
             --device model=a36xq,version=35,locale=en,orientation=portrait \
             --device model=stallion,version=36,locale=en,orientation=portrait \
+            --results-dir="stream-whisper-tiny-${{ github.run_id }}" \
             --timeout 20m \
             --directories-to-pull /sdcard/Documents
 
       - name: Pull streaming perf summaries (per device)
         run: |
-          result=`gcloud storage ls ${{ secrets.TEST_LAB_OUTPUT_BUCKET }} | sort -k2r | tail -n 1`
+          # Read THIS run's own results dir (pinned via --results-dir), not "newest in the bucket"
+          # (`tail -n 1` grabs whichever concurrent run wrote last — the empty-artifact bug).
+          bucket="${{ secrets.TEST_LAB_OUTPUT_BUCKET }}"; bucket="${bucket%/}"
+          base_dir="${bucket}/stream-whisper-tiny-${{ github.run_id }}"
           declare -A devs=( [akita-34]=pixel_8a [bluejay-32]=pixel_6a [stallion-36]=pixel_10a [gta9pwifi-34]=galaxy_tab_9p [a36xq-35]=galaxy_a36 )
           for d in "${!devs[@]}"; do
             label=${devs[$d]}
             mkdir -p results/$label
-            base="${result}${d}-en-portrait/artifacts/sdcard/Documents"
+            base="${base_dir}/${d}-en-portrait/artifacts/sdcard/Documents"
             gcloud storage cp "$base/streaming_perf_whisper_tiny_naive.json" results/$label/streaming_perf_whisper_tiny_naive.json || true
           done
+          echo "pulled JSONs:"; find results -name '*.json' | sort
 
       - name: Report (phone x mode grid)
-        run: python3 .github/scripts/streaming_perf_report.py results | tee streaming_perf_report_whisper.txt
+        run: python3 .github/scripts/streaming_perf_report.py results | tee streaming_perf_report_whisper.txt || true
 
       - name: Upload streaming perf summaries + report
+        if: always()
         uses: 'actions/upload-artifact@v7'
         with:
           name: streaming-perf-whisper
