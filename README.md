@@ -233,7 +233,9 @@ This level of verbosity needs to be avoided in a production setting!
 
 Integration tests (`integration_test/`) don't require this setup as they build the full app with native libraries included automatically.
 
-### Running performance tests
+### Profiling and performance tests
+
+#### Running locally on connected device
 
 Connect an android device, and run the integration test whisper_non_streaming_performance_test.dart on it
 
@@ -244,7 +246,42 @@ flutter drive --driver=test_driver/perf_driver.dart --target=integration_test/wh
 this generates a trace file in example/build named `performance_trace.json`. You can open 
 this file in chrome://tracing.
 
-### Running performance tests on Firebase Test lab
+#### Running on Firebase Test lab
+
+
+TODO describe motivation
+
+Note: tests need to be run sequentially as they otherwise overwrite each other's intermediate results
+TODO: ensure proper folder handling
+
+##### Setup up Firebase Test lab
+
+TODO
+define FIREBASE_STORAGE_URL
+
+##### Preparing assets
+
+First make sure to upload the assets for testing
+
+* generate the assets as specified above in "Generate assets"
+* then for each assets folder, package it's content into a zip archive omitting hidden files:
+
+```
+cd assets/transcribers/fastconformer/int8; zip -r /tmp/fastconformer_int8.zip *
+cd assets/transcribers/fastconformer/int32; zip -r /tmp/fastconformer_int32.zip *
+cd assets/transcribers/whisper/models/whisper_tiny/int8; zip -r /tmp/whisper_tiny_int8.zip *
+```
+
+* then upload to the cloud storage used by Test Lab (see setup above, replacing FIREBASE_STORAGE_URL)
+```
+gcloud storage cp /tmp/fastconformer_int8.zip gs://<FIREBASE_STORAGE_URL>/test
+gcloud storage cp /tmp/fastconformer_fp32.zip gs://<FIREBASE_STORAGE_URL>/test
+gcloud storage cp /tmp/whisper_tiny_int8.zip gs://<FIREBASE_STORAGE_URL>/test
+```
+
+##### Running
+
+Then to run the profiling/performance tests
 
 ```
 cd example/android
@@ -260,6 +297,9 @@ gcloud firebase test android run --type instrumentation \
     --directories-to-pull /sdcard/Documents
 ```
 
+##### Results
+
+TODO add profiling results
 
 ### macOS Setup
 
