@@ -19,17 +19,17 @@ is stored in a GitHub secret (see the table above).
 
 ## Uploading a model
 
-The zip must contain the model files at its **root** (no wrapping folder), so
-that `unzip -d <assets dir>` places them directly into the model directory.
+The zip must contain the model files at its root (no wrapping folder), so
+that `unzip -d <assets dir>` places them directly into the model directory the
+workflow points `MODEL_DIR` at.
 
 ```bash
-# 1. Zip the int8 model files at the zip root.
 cd assets/transcribers/whisper/models/whisper_small/int8
-zip -r ~/whisper_small_model.zip .
+rm -f /tmp/whisper_small_int8.zip
+zip -r -X /tmp/whisper_small_int8.zip . -x '.*' '__MACOSX*'
 
-# 2. Upload to the GCS bucket (use the same bucket as the existing models).
-gcloud storage cp ~/whisper_small_model.zip \
-  gs://<your-bucket>/<path>/whisper_small_model.zip
+gcloud storage cp /tmp/whisper_small_int8.zip \
+  gs://<your-bucket>/<path>/whisper_small_int8.zip
 ```
 
 ## Configuring the secret
@@ -40,12 +40,12 @@ Add / update the bucket-path secret so the workflow can find the uploaded zip:
   ```bash
   # repository secret
   gh secret set WHISPER_SMALL_MODEL_ZIP_BUCKET_PATH \
-    --body "gs://<your-bucket>/<path>/whisper_small_model.zip"
+    --body "gs://<your-bucket>/<path>/whisper_small_int8.zip"
 
   # or environment-scoped secret
   gh secret set WHISPER_SMALL_MODEL_ZIP_BUCKET_PATH \
     --env <environment> \
-    --body "gs://<your-bucket>/<path>/whisper_small_model.zip"
+    --body "gs://<your-bucket>/<path>/whisper_small_int8.zip"
   ```
 
 ## GCS permissions
