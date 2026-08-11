@@ -1,7 +1,7 @@
 # Flutter On-Device ASR
 
-This is a Flutter library for on-device automatic speech recognition (ASR), used in the Project Euphonia Tool.
-Please see [Project Euphonia](https://github.com/cdl-inclusion/ProjectEuphonia) for more information on the overall tool as well as other components.
+This is a Flutter library for on-device automatic speech recognition (ASR), used in the Akoli Speech App.
+Please see [Akoli Speech App](https://akolispeech.com/) for more information on the overall tool.
 
 Library overview:
 - Model-agnostic architecture supporting arbitrary ASR models
