@@ -1,6 +1,6 @@
 name: flutter_ondevice_asr
 description: "Model-agnostic on-device ASR library for Flutter. Currently supports Whisper and Nvidia FastConformer models."
-version: 0.8.0
+version: 0.9.0
 homepage: https://www.cdl-inclusion.com/
 repository: https://github.com/cdl-inclusion/flutter_ondevice_asr
 license: Apache-2.0
