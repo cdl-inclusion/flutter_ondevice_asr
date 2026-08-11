@@ -24,7 +24,7 @@ class StreamingTranscriber {
   int _minPartialDuration = 500;
   int _maxSegmentDuration = 10000;
 
-  // Incremental streaming (opt-in): non-null iff the wrapped transcriber advertises
+  // Incremental streaming (on by default, togglable): non-null iff the wrapped transcriber advertises
   // [IncrementalStreaming] AND it's enabled. When null, the naive whole-buffer path runs
   // (unchanged — this is what Whisper always uses). See streaming_rnnt_plan.md.
   IncrementalStreaming? _streamer;
@@ -97,13 +97,13 @@ class StreamingTranscriber {
   ///   skip any sort of sliding window approaches in the streaming-based transcription for efficiency.
   ///
   /// Incremental streaming (only if [transcriber] implements [IncrementalStreaming]:
-  /// - [enableIncrementalStreaming]: use the stateful chunked path for partials (default: **false**).
-  ///   When true (and supported), each partial decodes only the newly-arrived audio (persisting decoder state)
-  ///   instead of re-transcribing the whole growing buffer. Default is **false** (opt-in): route (a)
-  ///   is validated on one clean EN clip but its on-device latency/RTF win and atypical-speech parity
-  ///   are unverified (Phase 3), so the proven naive path stays the default. With this false, ALL
-  ///   transcribers use the naive whole-buffer path — byte-for-byte the pre-streaming behavior.
-  ///   See streaming_rnnt_status.md / streaming_efficiency_model.md.
+  /// - [enableIncrementalStreaming]: use the stateful chunked path for partials (default: **true**).
+  ///   When true (default, and supported), each partial decodes only the newly-arrived audio (persisting
+  ///   decoder state) instead of re-transcribing the whole growing buffer. Set to **false** to force ALL
+  ///   transcribers onto the naive whole-buffer path — byte-for-byte the pre-streaming behavior.
+  ///   Caveat: route (a) is validated on one clean EN clip but its on-device latency/RTF win and
+  ///   atypical-speech parity are still unverified (Phase 3); flip back to false if the incremental
+  ///   path regresses on atypical speech. See streaming_rnnt_status.md / streaming_efficiency_model.md.
   /// - [fullRedecodeOnStreamingFinal]: at VAD segment end, re-decode the whole segment once for
   ///   the final (default: **true**). Set false to commit
   ///   the streamed result as-is (cheaper, but the final inherits streaming's chunk-edge/punct
@@ -116,7 +116,7 @@ class StreamingTranscriber {
     bool enablePartials = true,
     int minPartialDuration = 500,
     int maxSegmentDuration = 30000,
-    bool enableIncrementalStreaming = false,
+    bool enableIncrementalStreaming = true,
     bool fullRedecodeOnStreamingFinal = true,
   }) async {
     final instance = StreamingTranscriber._(
