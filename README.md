@@ -124,7 +124,7 @@ Streaming-based system has the following parameters to set:
   - Defaults are good for standard speech, but may need adjustment for particularly slow or fast speech.
 * **enablePartials**: Emit partial transcriptions during speech. This will trigger a transcriber call whenever enough data for a partial is collected (len >= minPartialDuration) and especially for short minPartialDuration this will lead to significant system use. For weaker devices, it will be important to set minPartialDuration conservatively (ie, high). However, in order for transcriptions to feel real-time we would ideally set minPartialDuration to 300ms.
 * **minPartialDuration**: Minimum ms between partial updates. Only relevent of `enablePartials=true`.
-* **maxSegmentDuration**: Maximum segment length in ms before forcing end of segment. We limit this to the maximum segment length, Whisper can natively handle (30seconds). Practically, we will often however have shorter max segment length to allow for smooth transcriptions, recommended is 15 secs.
+* **maxSegmentDuration**: Maximum segment length in ms before forcing end of segment. We limit this to the maximum segment length, Whisper can natively handle (30seconds). Practically, we will often however have shorter max segment length to allow for smooth transcriptions; the default is 20 secs.
 
 
 How to set them will depend both on the speaker (wrt to the VAD setting) as well as on the device where transcription is being run.
