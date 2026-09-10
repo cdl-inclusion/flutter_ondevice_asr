@@ -14,8 +14,12 @@ void main() {
 
   const testAudioFile =
       'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
+  // Transcript recorded against the streaming settings below (eos 1000 ms, max segment 20 s). 
+  // The VAD splits this clip into two segments and Whisper decodes each on its own, so it punctuates
+  // and capitalises per segment.
+  // (transcript contains the errors the tiny whisper model produces here exceptedly)
   const expectedTranscript =
-      'And so my fellow Americans ask not what you are country can do for you. Ask what you can do for your country.';
+      'And so my fellow Americans. Not what you are country can do for you. Ask what you can do for your country.';
 
   const modelDirectory =
       'assets/transcribers/whisper/models/whisper_tiny/int8';
@@ -53,17 +57,23 @@ void main() {
     final streaming = await StreamingTranscriber.create(
       transcriber: whisper,
       vadThreshold: 0.5,
-      eosMinSilence: 300,
+      // Product defaults, so this test exercises what ships.
+      eosMinSilence: 1000,
       sampleRate: 16000,
       enablePartials: true,
       minPartialDuration: 500,
-      maxSegmentDuration: 10000,
+      maxSegmentDuration: 20000,
     );
     logStep('Streaming transcriber initialized');
 
     // 4. Load test audio
     final audioAsset = await rootBundle.load(testAudioFile);
     final tempDir = await getTemporaryDirectory();
+    // The sandboxed container's cache subdirectory is not created for us; path_provider
+    // only names it. Same guard as transcribe_test_helper.dart.
+    if (!await tempDir.exists()) {
+      await tempDir.create(recursive: true);
+    }
     final tempAudioFile = File('${tempDir.path}/test_audio.wav');
     await tempAudioFile.writeAsBytes(audioAsset.buffer.asUint8List());
 
