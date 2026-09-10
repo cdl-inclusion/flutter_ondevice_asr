@@ -293,6 +293,10 @@ class SileroVAD {
   }
 }
 
+/// The end threshold is [SileroVADIterator.threshold] minus this. Silero's own
+/// `neg_threshold` default
+const double _vadEndThresholdDelta = 0.15;
+
 /// VAD iterator for streaming speech detection
 class SileroVADIterator {
   final SileroVAD model;
@@ -300,6 +304,11 @@ class SileroVADIterator {
   final int samplingRate;
   final int minSilenceDurationMs;
   final int speechPadMs;
+
+  /// Start gate: 'start' is only reported once this many consecutive chunks have passed since
+  /// the first chunk at or above [threshold] without the probability falling below the end
+  /// threshold. Shorter bursts are discarded silently. 0 = off (upstream behaviour).
+  final int minSpeechChunks;
   final bool verbose;
 
   late final int _minSilenceSamples;
@@ -308,6 +317,8 @@ class SileroVADIterator {
   int _tempEnd = 0;
   int _currentSample = 0;
   int _callCount = 0;
+  // Chunks seen since the first chunk >= threshold while the start gate is evaluating; 0 = idle.
+  int _gateCount = 0;
 
   SileroVADIterator({
     required this.model,
@@ -315,6 +326,7 @@ class SileroVADIterator {
     this.samplingRate = 16000,
     this.minSilenceDurationMs = 100,
     this.speechPadMs = 30,
+    this.minSpeechChunks = 0,
     this.verbose = false,
   }) {
     _minSilenceSamples = samplingRate * minSilenceDurationMs ~/ 1000;
@@ -328,7 +340,11 @@ class SileroVADIterator {
     _triggered = false;
     _tempEnd = 0;
     _currentSample = 0;
+    _gateCount = 0;
   }
+
+  /// True while an onset is being evaluated by the start gate (not yet triggered).
+  bool get gatePending => _gateCount > 0;
 
   /// Process audio chunk and detect speech boundaries
   ///
@@ -356,6 +372,26 @@ class SileroVADIterator {
       _tempEnd = 0;
     }
 
+    if (!_triggered && minSpeechChunks > 0) {
+      // Start gate (see [minSpeechChunks]).
+      if (_gateCount == 0) {
+        if (speechProb >= threshold) _gateCount = 1;
+        _currentSample += windowSizeSamples;
+        return null;
+      }
+      if (speechProb < threshold - _vadEndThresholdDelta) {
+        _gateCount = 0; // burst too short: discard the onset
+        _currentSample += windowSizeSamples;
+        return null;
+      }
+      _gateCount++;
+      if (_gateCount < minSpeechChunks) {
+        _currentSample += windowSizeSamples;
+        return null;
+      }
+      _gateCount = 0; // gate passed: fall through to the normal start below
+    }
+
     if (speechProb >= threshold && !_triggered) {
       // Speech start detected
       _triggered = true;
@@ -370,7 +406,7 @@ class SileroVADIterator {
       return 'start';
     }
 
-    if (speechProb < threshold - 0.15 && _triggered) {
+    if (speechProb < threshold - _vadEndThresholdDelta && _triggered) {
       // Potential silence detected
       if (_tempEnd == 0) {
         // Mark the start of silence
