@@ -100,7 +100,7 @@ void _streamingTest({
       sampleRate: 16000,
       enablePartials: true,
       minPartialDuration: 500,
-      maxSegmentDuration: 10000,
+      maxSegmentDuration: 20000,
       enableIncrementalStreaming: incremental,
       // default fullRedecodeOnStreamingFinal: true
     );
