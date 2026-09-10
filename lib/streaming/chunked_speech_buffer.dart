@@ -18,10 +18,20 @@ class ChunkedSpeechBuffer {
     _totalSamples = 0;
   }
 
+  /// Remove exactly [samples] samples from the front (or everything, if fewer available).
+  /// Whole chunks are dropped first; a chunk straddling the cut is replaced by its tail, so the
+  /// result is sample-exact. This leaves a 100ms pre-roll.
   void removeFromFront(int samples) {
-    while ((_totalSamples - _chunks.first.length) >= samples) {
-      _totalSamples -= _chunks.first.length;
-      _chunks.removeFirst();
+    var remaining = samples;
+    while (_chunks.isNotEmpty && _chunks.first.length <= remaining) {
+      final removed = _chunks.removeFirst().length;
+      remaining -= removed;
+      _totalSamples -= removed;
+    }
+    if (remaining > 0 && _chunks.isNotEmpty) {
+      final first = _chunks.removeFirst();
+      _chunks.addFirst(first.sublist(remaining));
+      _totalSamples -= remaining;
     }
   }
 

@@ -1,4 +1,8 @@
 // ignore_for_file: avoid_print — integration-test progress logging; print is intentional.
+//
+// FastConformer Hybrid under StreamingTranscriber, incremental (chunked) streaming:
+// partials decode only the new audio via the chunked CTC path, finals are a full offline
+// RNN-T re-decode.
 
 import 'dart:io';
 import 'package:flutter/services.dart';
@@ -14,15 +18,15 @@ void main() {
 
   const testAudioFile =
       'packages/flutter_ondevice_asr/assets/audio/jfk_asknot.wav';
-  // Transcript recorded against the streaming settings below (eos 1000 ms, max segment 20 s). 
-  // The VAD splits this clip into two segments and Whisper decodes each on its own, so it punctuates
-  // and capitalises per segment.
-  // (transcript contains the errors the tiny whisper model produces here exceptedly)
+  // Transcript recorded against the streaming settings below.
+  // The VAD splits this clip into two segments and each is decoded on its own, so the model
+  // re-punctuates per segment and can lose a word sitting right on a boundary (the "ask" before
+  // "not").
   const expectedTranscript =
-      'And so my fellow Americans. Not what you are country can do for you. Ask what you can do for your country.';
+      'So my fellow Americans . not what your country can do for you , ask what you can do for your country .';
 
-  const modelDirectory =
-      'assets/transcribers/whisper/models/whisper_tiny/int8';
+  // One HYBRID artifact serves both heads (shared super_encoder + ctc_decoder + decoder_joint).
+  const modelDirectory = 'assets/transcribers/fastconformer/int8';
   const String language = 'en';
 
   // Streaming configuration
@@ -30,7 +34,8 @@ void main() {
   const sampleRate = 16000;
   final chunkSize = (sampleRate * chunkDurationMs / 1000).toInt();
 
-  testWidgets('streaming transcribe test audio', (WidgetTester tester) async {
+  testWidgets('streaming transcribe test audio (FastConformer Hybrid, chunked)',
+      (WidgetTester tester) async {
     // 1. Initialize stopwatch to measure durations
     final totalSw = Stopwatch()..start();
     final stepSw = Stopwatch();
@@ -44,10 +49,11 @@ void main() {
     print('[${DateTime.now()}] START STREAMING TEST');
     stepSw.start();
 
-    final whisper = Transcriber.getInstance(TranscriberType.whisper);
+    final fastConformer =
+        Transcriber.getInstance(TranscriberType.fastConformerHybrid);
 
     // 2. Load models
-    await whisper.loadModel(
+    await fastConformer.loadModel(
       modelDirectory: modelDirectory,
       languageCode: language,
     );
@@ -55,7 +61,7 @@ void main() {
 
     // 3. Initialize streaming transcriber with all parameters
     final streaming = await StreamingTranscriber.create(
-      transcriber: whisper,
+      transcriber: fastConformer,
       vadThreshold: 0.5,
       // Product defaults, so this test exercises what ships.
       eosMinSilence: 1000,
@@ -63,6 +69,12 @@ void main() {
       enablePartials: true,
       minPartialDuration: 500,
       maxSegmentDuration: 20000,
+      // Chunked (incremental) streaming: each partial decodes only the newly arrived audio via
+      // the CTC head with persisted decoder state, instead of re-transcribing the whole buffer.
+      enableIncrementalStreaming: true,
+      // Finals are a full offline re-decode through the RNN-T head - the accurate one - so a
+      // segment end is never served by the cheaper chunked CTC result.
+      fullRedecodeOnStreamingFinal: true,
     );
     logStep('Streaming transcriber initialized');
 
@@ -112,7 +124,7 @@ void main() {
     });
 
     // 6. Feed audio in chunks to simulate streaming
-    print('[${DateTime.now()}] Feeding audio in ${chunkSize}-sample chunks...');
+    print('[${DateTime.now()}] Feeding audio in $chunkSize-sample chunks...');
     stepSw.reset();
     stepSw.start();
     final streamingStartTime = DateTime.now();
@@ -147,8 +159,6 @@ void main() {
     print('====================================================\n');
 
     // 10. Verify results
-    final audioLengthSeconds = testAudioFloat32List.length / sampleRate;
-
     print('[${DateTime.now()}] ===== STREAMING TEST SUMMARY =====');
     print('Total partials: ${partialResults.length}');
     print('Total segments: ${finalResults.length}');

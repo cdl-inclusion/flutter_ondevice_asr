@@ -34,11 +34,11 @@ void main() {
     final streaming = await StreamingTranscriber.create(
       transcriber: whisper,
       vadThreshold: 0.5,
-      eosMinSilence: 300,
+      eosMinSilence: 1000,
       sampleRate: 16000,
       enablePartials: true,
       minPartialDuration: 500,
-      maxSegmentDuration: 10000,
+      maxSegmentDuration: 20000,
     );
 
     final audioData = await Audio.instance.loadAudio(testAudioFile);
@@ -48,7 +48,7 @@ void main() {
     streaming.configure(
       enablePartials: true,
       minPartialDuration: 500,
-      maxSegmentDuration: 10000,
+      maxSegmentDuration: 20000,
     );
     streaming.reset();
 
